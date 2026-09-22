@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gastos Hilux</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f4f1;
+    --surface: #ffffff;
+    --surface-2: #f0eee8;
+    --text-primary: #1c1b18;
+    --text-secondary: #6b6a63;
+    --text-muted: #9c9a92;
+    --border: #e3e1da;
+    --accent: #b8511f;
+    --accent-fg: #ffffff;
+    --accent-tint: #fbeee6;
+    --accent-tint-text: #7a3312;
+    --success: #3b6d11;
+    --success-tint: #eaf3de;
+    --success-tint-text: #27500a;
+    --danger: #a32d2d;
+    --danger-tint: #fcebeb;
+    --danger-tint-text: #791f1f;
+    --shadow: 0 1px 2px rgba(28,27,24,0.06), 0 1px 8px rgba(28,27,24,0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #171613;
+      --surface: #211f1c;
+      --surface-2: #2a2825;
+      --text-primary: #f2f0eb;
+      --text-secondary: #b2afa6;
+      --text-muted: #83807a;
+      --border: #38352f;
+      --accent: #e07a44;
+      --accent-fg: #211008;
+      --accent-tint: #3a2417;
+      --accent-tint-text: #f3c19e;
+      --success: #97c459;
+      --success-tint: #24350f;
+      --success-tint-text: #c0dd97;
+      --danger: #ef8b8b;
+      --danger-tint: #3a1a1a;
+      --danger-tint-text: #f7c1c1;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 1px 8px rgba(0,0,0,0.25);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171613;
+    --surface: #211f1c;
+    --surface-2: #2a2825;
+    --text-primary: #f2f0eb;
+    --text-secondary: #b2afa6;
+    --text-muted: #83807a;
+    --border: #38352f;
+    --accent: #e07a44;
+    --accent-fg: #211008;
+    --accent-tint: #3a2417;
+    --accent-tint-text: #f3c19e;
+    --success: #97c459;
+    --success-tint: #24350f;
+    --success-tint-text: #c0dd97;
+    --danger: #ef8b8b;
+    --danger-tint: #3a1a1a;
+    --danger-tint-text: #f7c1c1;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 1px 8px rgba(0,0,0,0.25);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  #app {
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  button { font-family: inherit; }
+  input, select, textarea { font-family: inherit; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dayjs/1.11.10/dayjs.min.js"></script>
+<script>
+/* =========================================================
+   GASTOS HILUX — app de registro de gastos, 100% estática
+   (para publicar en GitHub Pages u otro hosting estático)
+   Persistencia: localStorage del navegador (ver Ajustes >
+   Copia de seguridad para exportar/importar backups .json)
+   ========================================================= */
+
+const CATS = {
+  combustible: { label: "Combustible", icon: "fuel", defaultCurrency: "UYU" },
+  service:     { label: "Service y repuestos", icon: "wrench", defaultCurrency: "UYU" },
+  aditivo:     { label: "Aditivos", icon: "drop", defaultCurrency: "UYU" },
+  cubierta:    { label: "Cubiertas", icon: "tire", defaultCurrency: "USD" },
+};
+
+const state = {
+  tab: "inicio",          // inicio | cargar | historial | ajustes
+  dbStatus: "loading",    // loading | ready | unavailable
+  entries: [],
+  settings: { cotizacion: 40, odometroInicial: 340000 },
+  addTipo: null,          // categoría elegida en "cargar"
+  editId: null,           // id de entry en edición (null = alta)
+  editTipo: null,
+  historialFiltro: "todos",
+  toast: null,
+};
+
+let db = null;
+let unsubEntries = null;
+let unsubSettings = null;
+
+// ---------- utilidades ----------
+const fmtMoney = (n, cur) => {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const v = Number(n);
+  const sym = cur === "USD" ? "US$" : "$";
+  return sym + " " + v.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+const fmtUSD = (n) => fmtMoney(n, "USD");
+const fmtKm = (n) => (n === null || n === undefined || isNaN(n)) ? "—" : Number(n).toLocaleString("es-UY") + " km";
+const fmtDate = (iso) => iso ? dayjs(iso).format("DD/MM/YYYY") : "—";
+const todayISO = () => dayjs().format("YYYY-MM-DD");
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+function toUSD(moneda, monto, cotizacion) {
+  if (monto === null || monto === undefined || monto === "" || isNaN(monto)) return 0;
+  const m = Number(monto);
+  if (moneda === "USD") return m;
+  const c = Number(cotizacion) || 0;
+  return c > 0 ? m / c : 0;
+}
+
+function lastOdometro(excludeId) {
+  let max = state.settings.odometroInicial || 0;
+  for (const e of state.entries) {
+    if (e.id === excludeId) continue;
+    if (typeof e.odometro === "number" && e.odometro > max) max = e.odometro;
+  }
+  return max;
+}
+
+function showToast(msg, kind) {
+  state.toast = { msg, kind: kind || "ok" };
+  render();
+  setTimeout(() => { state.toast = null; render(); }, 2200);
+}
+
+// ---------- iconos (SVG inline, sin dependencias externas) ----------
+const ICONS = {
+  fuel: '<path d="M3 22V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M3 10h10"/><path d="M15 9l3.5 3.5a1.5 1.5 0 0 1 .5 1.1V19a1.5 1.5 0 0 0 3 0v-6c0-.5-.2-1-.6-1.4L18 8"/><path d="M2 22h13"/>',
+  wrench: '<path d="M14.7 6.3a4 4 0 1 0-5.6 5.6L3 18v3h3l6.1-6.1a4 4 0 0 0 5.6-5.6l-2.8 2.8-2-2z"/>',
+  drop: '<path d="M12 2s6 7 6 12a6 6 0 0 1-12 0c0-5 6-12 6-12z"/>',
+  tire: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><path d="M12 3v3M12 18v3M21 12h-3M6 12H3M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1M18.4 18.4l-2.1-2.1M7.7 7.7 5.6 5.6"/>',
+  home: '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  chevron: '<path d="M9 18l6-6-6-6"/>',
+  trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16z"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  road: '<path d="M9 3 5 21M15 3l4 18M12 3v3M12 10v3M12 17v3"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  alert: '<path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  tank: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
+};
+function icon(name, size, color) {
+  size = size || 20;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color || 'currentColor'}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
+}
+
+// ---------- persistencia (localStorage del navegador) ----------
+const STORAGE_KEY = "gastos_hilux_data_v1";
+
+function loadFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { entries: [], settings: { cotizacion: 40, odometroInicial: 340000 } };
+    const parsed = JSON.parse(raw);
+    return {
+      entries: Array.isArray(parsed.entries) ? parsed.entries : [],
+      settings: Object.assign({ cotizacion: 40, odometroInicial: 340000 }, parsed.settings || {}),
+    };
+  } catch (e) {
+    return { entries: [], settings: { cotizacion: 40, odometroInicial: 340000 } };
+  }
+}
+
+function persistToStorage() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ entries: state.entries, settings: state.settings }));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function initDb() {
+  const data = loadFromStorage();
+  state.entries = data.entries.slice().sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  state.settings = data.settings;
+  state.dbStatus = "ready";
+  render();
+}
+
+async function saveSettingsField(patch) {
+  state.settings = Object.assign({}, state.settings, patch, { updatedAt: Date.now() });
+  if (!persistToStorage()) showToast("No se pudo guardar la configuración", "error");
+}
+
+async function saveEntry(tipo, data, editId) {
+  const payload = Object.assign({ tipo, createdAt: Date.now() }, data);
+  if (editId) {
+    const idx = state.entries.findIndex(e => e.id === editId);
+    if (idx >= 0) state.entries[idx] = Object.assign({ id: editId }, payload);
+  } else {
+    state.entries.unshift(Object.assign({ id: uid() + Date.now().toString(36) }, payload));
+  }
+  state.entries.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  if (persistToStorage()) {
+    showToast(editId ? "Registro actualizado" : "Cargado", "ok");
+  } else {
+    showToast("No se pudo guardar", "error");
+  }
+  state.tab = "inicio";
+  state.addTipo = null;
+  state.editId = null;
+  state.editTipo = null;
+  render();
+}
+
+async function deleteEntry(id) {
+  state.entries = state.entries.filter(e => e.id !== id);
+  if (persistToStorage()) {
+    showToast("Eliminado", "ok");
+  } else {
+    showToast("No se pudo eliminar", "error");
+  }
+}
+
+// ---------- render raíz ----------
+function render() {
+  const root = document.getElementById("app");
+  root.innerHTML = `
+    ${renderToast()}
+    <div style="flex:1; overflow-y:auto; padding: 16px 16px 8px;">
+      ${renderHeader()}
+      ${state.dbStatus === "unavailable" ? renderUnavailable() : renderTab()}
+    </div>
+    ${state.dbStatus === "ready" ? renderNav() : ""}
+  `;
+  wireEvents();
+}
+
+function renderToast() {
+  if (!state.toast) return "";
+  const bg = state.toast.kind === "error" ? "var(--danger-tint)" : "var(--success-tint)";
+  const fg = state.toast.kind === "error" ? "var(--danger-tint-text)" : "var(--success-tint-text)";
+  return `<div style="position:sticky; top:env(safe-area-inset-top,0px); z-index:50; padding:10px 16px 0;">
+    <div style="background:${bg}; color:${fg}; padding:10px 14px; border-radius:10px; font-size:14px; font-weight:500; box-shadow:var(--shadow);">
+      ${state.toast.msg}
+    </div>
+  </div>`;
+}
+
+function renderHeader() {
+  const titles = { inicio: "Gastos Hilux", cargar: "Nuevo registro", historial: "Historial", ajustes: "Ajustes" };
+  return `<div style="display:flex; align-items:center; justify-content:space-between; padding: 8px 0 18px;">
+    <h1 style="font-size:22px; font-weight:700; margin:0; letter-spacing:-0.01em;">${titles[state.tab] || ""}</h1>
+    ${state.tab !== "inicio" ? `<button data-nav="inicio" style="background:none;border:none;color:var(--text-secondary);display:flex;align-items:center;gap:4px;font-size:14px;padding:6px;cursor:pointer;">${icon("x",18)}</button>` : `<div style="width:20px;height:20px;color:var(--accent);">${icon("road",22,"var(--accent)")}</div>`}
+  </div>`;
+}
+
+function renderUnavailable() {
+  return `<div style="text-align:center; padding:60px 20px; color:var(--text-secondary);">
+    <div style="margin-bottom:12px;">${icon("alert",32)}</div>
+    <p style="font-size:15px; margin:0;">Esta app necesita abrirse dentro de Claude para guardar los datos.</p>
+  </div>`;
+}
+
+function renderNav() {
+  const items = [
+    { id: "inicio", label: "Inicio", icon: "home" },
+    { id: "cargar", label: "Cargar", icon: "plus" },
+    { id: "historial", label: "Historial", icon: "list" },
+    { id: "ajustes", label: "Ajustes", icon: "settings" },
+  ];
+  return `<div style="position:sticky; bottom:0; background:var(--surface); border-top:0.5px solid var(--border); padding: 6px 8px calc(6px + env(safe-area-inset-bottom,0px)); display:flex; justify-content:space-around;">
+    ${items.map(it => {
+      const active = state.tab === it.id;
+      const isPlus = it.id === "cargar";
+      return `<button data-nav="${it.id}" style="background:none;border:none;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 10px;cursor:pointer;color:${active ? 'var(--accent)' : 'var(--text-muted)'};">
+        ${isPlus
+          ? `<div style="width:38px;height:38px;border-radius:50%;background:var(--accent);color:var(--accent-fg);display:flex;align-items:center;justify-content:center;margin-bottom:1px;">${icon("plus",20,"var(--accent-fg)")}</div>`
+          : icon(it.icon, 21)}
+        <span style="font-size:11px; font-weight:${active ? 600 : 500};">${it.label}</span>
+      </button>`;
+    }).join("")}
+  </div>`;
+}
+
+function renderTab() {
+  if (state.dbStatus !== "ready") {
+    return `<div style="text-align:center; padding:60px 0; color:var(--text-muted); font-size:14px;">Cargando…</div>`;
+  }
+  if (state.tab === "inicio") return renderInicio();
+  if (state.tab === "cargar") return renderCargar();
+  if (state.tab === "historial") return renderHistorial();
+  if (state.tab === "ajustes") return renderAjustes();
+  return "";
+}
+
+// ---------- INICIO ----------
+function categoryTotalsUSD() {
+  const totals = { combustible: 0, service: 0, aditivo: 0, cubierta: 0 };
+  for (const e of state.entries) {
+    if (totals[e.tipo] !== undefined) totals[e.tipo] += (e.montoUSD || 0);
+  }
+  return totals;
+}
+
+function consumoPromedio() {
+  const fuel = state.entries
+    .filter(e => e.tipo === "combustible" && typeof e.odometro === "number" && typeof e.litros === "number" && e.litros > 0)
+    .sort((a, b) => a.odometro - b.odometro);
+  let totalLitros = 0, totalKm = 0, pares = 0;
+  for (let i = 1; i < fuel.length; i++) {
+    const prev = fuel[i - 1], cur = fuel[i];
+    if (cur.parcial) continue; // solo válido si la carga actual completó el tanque
+    const km = cur.odometro - prev.odometro;
+    if (km > 0) { totalLitros += cur.litros; totalKm += km; pares++; }
+  }
+  if (pares === 0 || totalLitros === 0) return null;
+  return totalKm / totalLitros;
+}
+
+function renderInicio() {
+  const totals = categoryTotalsUSD();
+  const totalGeneral = Object.values(totals).reduce((a, b) => a + b, 0);
+  const odoActual = lastOdometro(null);
+  const odoIni = state.settings.odometroInicial || 0;
+  const kmRec = Math.max(0, odoActual - odoIni);
+  const costoKm = kmRec > 0 ? totalGeneral / kmRec : null;
+  const consumo = consumoPromedio();
+  const recientes = state.entries.slice(0, 5);
+
+  const catRows = Object.keys(CATS).map(k => {
+    const c = CATS[k];
+    return `<div style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:0.5px solid var(--border);">
+      <div style="width:34px;height:34px;border-radius:9px;background:var(--accent-tint);color:var(--accent-tint-text);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon(c.icon,17)}</div>
+      <div style="flex:1; font-size:14px; color:var(--text-primary);">${c.label}</div>
+      <div style="font-size:14px; font-weight:600;">${fmtUSD(totals[k])}</div>
+    </div>`;
+  }).join("");
+
+  return `
+    <div style="background:var(--accent); color:var(--accent-fg); border-radius:16px; padding:18px 20px; margin-bottom:14px;">
+      <div style="font-size:13px; opacity:0.85; font-weight:500;">Gastado en total</div>
+      <div style="font-size:32px; font-weight:700; letter-spacing:-0.02em; margin-top:2px;">${fmtUSD(totalGeneral)}</div>
+      <div style="display:flex; gap:18px; margin-top:12px; font-size:12.5px; opacity:0.92;">
+        <div><div style="font-weight:600;">${fmtKm(kmRec)}</div><div style="opacity:0.85;">recorridos</div></div>
+        <div><div style="font-weight:600;">${costoKm !== null ? fmtUSD(costoKm) + "/km" : "—"}</div><div style="opacity:0.85;">costo por km</div></div>
+        ${consumo !== null ? `<div><div style="font-weight:600;">${consumo.toFixed(2)} km/L</div><div style="opacity:0.85;">consumo</div></div>` : ""}
+      </div>
+    </div>
+
+    <div style="display:flex; align-items:center; justify-content:space-between; margin: 4px 0 2px;">
+      <span style="font-size:12px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.03em;">Odómetro actual</span>
+      <span style="font-size:14px; font-weight:600;">${fmtKm(odoActual)}</span>
+    </div>
+
+    <div style="background:var(--surface); border-radius:14px; padding: 4px 16px; margin: 14px 0; box-shadow:var(--shadow);">
+      ${catRows}
+    </div>
+
+    <button data-nav="cargar" style="width:100%; background:var(--accent); color:var(--accent-fg); border:none; border-radius:12px; padding:13px; font-size:15px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px; margin-bottom:18px; cursor:pointer;">
+      ${icon("plus",18,"var(--accent-fg)")} Cargar combustible
+    </button>
+
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+      <span style="font-size:14px; font-weight:600;">Últimos registros</span>
+      <button data-nav="historial" style="background:none;border:none;color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;">Ver todos</button>
+    </div>
+    ${recientes.length === 0
+      ? `<div style="text-align:center; padding:30px 0; color:var(--text-muted); font-size:14px;">Todavía no cargaste ningún gasto.</div>`
+      : recientes.map(entryRow).join("")}
+  `;
+}
+
+function entryRow(e) {
+  const c = CATS[e.tipo] || { label: e.tipo, icon: "list" };
+  let sub = fmtDate(e.fecha);
+  if (e.tipo === "combustible") {
+    const bits = [];
+    if (typeof e.litros === "number") bits.push(e.litros + " L");
+    if (e.fuente === "cisterna") bits.push("cisterna");
+    if (e.parcial) bits.push("parcial");
+    sub += bits.length ? " · " + bits.join(" · ") : "";
+  } else if (e.descripcion) {
+    sub += " · " + e.descripcion;
+  }
+  return `<div data-edit="${e.id}" data-tipo="${e.tipo}" style="display:flex; align-items:center; gap:10px; padding:11px 12px; background:var(--surface); border-radius:12px; margin-bottom:8px; box-shadow:var(--shadow); cursor:pointer;">
+    <div style="width:34px;height:34px;border-radius:9px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon(c.icon,16)}</div>
+    <div style="flex:1; min-width:0;">
+      <div style="font-size:14px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.label}</div>
+      <div style="font-size:12.5px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${sub}</div>
+    </div>
+    <div style="text-align:right; flex-shrink:0;">
+      <div style="font-size:14px; font-weight:600;">${fmtUSD(e.montoUSD)}</div>
+      ${e.moneda === "UYU" ? `<div style="font-size:11.5px; color:var(--text-muted);">${fmtMoney(e.monto,"UYU")}</div>` : ""}
+    </div>
+  </div>`;
+}
+
+// ---------- CARGAR ----------
+function renderCargar() {
+  if (state.addTipo || state.editTipo) {
+    const tipo = state.editTipo || state.addTipo;
+    return renderForm(tipo, state.editId);
+  }
+  return `
+    <p style="font-size:14px; color:var(--text-secondary); margin:0 0 16px;">¿Qué querés registrar?</p>
+    <button data-pick="combustible" style="width:100%; text-align:left; display:flex; align-items:center; gap:14px; background:var(--accent); color:var(--accent-fg); border:none; border-radius:14px; padding:18px; margin-bottom:12px; cursor:pointer;">
+      <div style="width:42px;height:42px;border-radius:11px;background:rgba(255,255,255,0.18);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon("fuel",22,"var(--accent-fg)")}</div>
+      <div>
+        <div style="font-size:16px; font-weight:700;">Combustible</div>
+        <div style="font-size:12.5px; opacity:0.85;">Lo más habitual</div>
+      </div>
+    </button>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+      ${["service","aditivo","cubierta"].map(k => {
+        const c = CATS[k];
+        return `<button data-pick="${k}" style="text-align:left; display:flex; flex-direction:column; gap:8px; background:var(--surface); border:0.5px solid var(--border); border-radius:14px; padding:16px; cursor:pointer; box-shadow:var(--shadow);">
+          <div style="width:36px;height:36px;border-radius:10px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;">${icon(c.icon,18)}</div>
+          <div style="font-size:14px; font-weight:600; color:var(--text-primary);">${c.label}</div>
+        </button>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function fieldLabel(t) {
+  return `<label style="display:block; font-size:12.5px; font-weight:600; color:var(--text-secondary); margin: 14px 0 6px;">${t}</label>`;
+}
+function inputStyle() {
+  return `width:100%; box-sizing:border-box; background:var(--surface); border:0.5px solid var(--border); border-radius:10px; padding:11px 12px; font-size:15px; color:var(--text-primary); outline:none;`;
+}
+
+function renderForm(tipo, editId) {
+  const c = CATS[tipo];
+  const existing = editId ? state.entries.find(e => e.id === editId) : null;
+  const defCur = existing ? existing.moneda : c.defaultCurrency;
+  const odoSugerido = existing ? existing.odometro : lastOdometro(null);
+
+  let fieldsHtml = "";
+  if (tipo === "combustible") {
+    fieldsHtml = `
+      ${fieldLabel("Fuente")}
+      <div style="display:flex; gap:8px;" id="fuenteGroup">
+        ${["surtidor","cisterna"].map(f => `<button type="button" data-fuente="${f}" class="fuenteBtn" style="flex:1; padding:10px; border-radius:10px; border:0.5px solid var(--border); background:${(existing ? existing.fuente : "surtidor") === f ? "var(--accent-tint)" : "var(--surface)"}; color:${(existing ? existing.fuente : "surtidor") === f ? "var(--accent-tint-text)" : "var(--text-primary)"}; font-size:13.5px; font-weight:600; cursor:pointer;">${f === "surtidor" ? "Surtidor" : "Cisterna (cosechadora)"}</button>`).join("")}
+      </div>
+      <input type="hidden" id="f_fuente" value="${existing ? existing.fuente : "surtidor"}">
+
+      ${fieldLabel("Litros (dejá vacío si no tenés el dato, ej. cisterna sin medidor)")}
+      <input id="f_litros" type="number" inputmode="decimal" step="0.1" placeholder="Ej. 70" value="${existing && existing.litros != null ? existing.litros : ""}" style="${inputStyle()}">
+
+      <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:13.5px; color:var(--text-secondary);">
+        <input type="checkbox" id="f_parcial" ${existing && existing.parcial ? "checked" : ""} style="width:17px;height:17px;"> Carga parcial (no llené el tanque)
+      </label>
+    `;
+  } else {
+    const label2 = tipo === "aditivo" ? "Producto" : (tipo === "cubierta" ? "Descripción" : "Descripción del trabajo");
+    fieldsHtml = `
+      ${fieldLabel(label2)}
+      <input id="f_descripcion" type="text" placeholder="${tipo === "aditivo" ? "Ej. Liqui Moly Cera Tec" : tipo === "cubierta" ? "Ej. Juego de cubiertas + alineación" : "Ej. Cambio de aceite y filtros"}" value="${existing ? (existing.descripcion || "") : ""}" style="${inputStyle()}">
+
+      ${tipo === "cubierta" ? `
+      <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:13.5px; color:var(--text-secondary);">
+        <input type="checkbox" id="f_alineacion" ${existing && existing.incluyeAlineacion ? "checked" : ""} style="width:17px;height:17px;"> Incluye alineación
+      </label>` : ""}
+
+      ${fieldLabel("Proveedor / taller (opcional)")}
+      <input id="f_proveedor" type="text" placeholder="Ej. Gomería San Javier" value="${existing ? (existing.proveedor || "") : ""}" style="${inputStyle()}">
+    `;
+  }
+
+  return `
+  <form id="entryForm">
+    <input type="hidden" id="f_tipo" value="${tipo}">
+
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+      <div style="width:34px;height:34px;border-radius:9px;background:var(--accent-tint);color:var(--accent-tint-text);display:flex;align-items:center;justify-content:center;">${icon(c.icon,17)}</div>
+      <div style="font-size:16px; font-weight:700;">${c.label}${existing ? " · editar" : ""}</div>
+    </div>
+
+    ${fieldLabel("Fecha")}
+    <input id="f_fecha" type="date" value="${existing ? existing.fecha : todayISO()}" style="${inputStyle()}">
+
+    ${fieldLabel("Odómetro (km)")}
+    <input id="f_odometro" type="number" inputmode="numeric" placeholder="Ej. 341250" value="${odoSugerido || ""}" style="${inputStyle()}">
+
+    ${fieldsHtml}
+
+    ${fieldLabel("Moneda del gasto")}
+    <div style="display:flex; gap:8px;">
+      ${["UYU","USD"].map(m => `<button type="button" data-moneda="${m}" class="monedaBtn" style="flex:1; padding:10px; border-radius:10px; border:0.5px solid var(--border); background:${defCur === m ? "var(--accent-tint)" : "var(--surface)"}; color:${defCur === m ? "var(--accent-tint-text)" : "var(--text-primary)"}; font-size:13.5px; font-weight:600; cursor:pointer;">${m === "UYU" ? "Pesos (UYU)" : "Dólares (USD)"}</button>`).join("")}
+    </div>
+    <input type="hidden" id="f_moneda" value="${defCur}">
+
+    ${fieldLabel("Monto")}
+    <input id="f_monto" type="number" inputmode="decimal" step="0.01" placeholder="Ej. 60000" value="${existing && existing.monto != null ? existing.monto : ""}" style="${inputStyle()}">
+
+    <div id="cotizWrap" style="display:${defCur === "UYU" ? "block" : "none"};">
+      ${fieldLabel("Cotización usada (pesos uruguayos por dólar)")}
+      <input id="f_cotizacion" type="number" inputmode="decimal" step="0.01" value="${existing && existing.cotizacion != null ? existing.cotizacion : state.settings.cotizacion}" style="${inputStyle()}">
+    </div>
+
+    <div id="previewUSD" style="margin-top:10px; font-size:13px; color:var(--text-secondary);"></div>
+
+    ${fieldLabel("Notas (opcional)")}
+    <textarea id="f_notas" rows="2" placeholder="Notas..." style="${inputStyle()} resize:none;">${existing ? (existing.notas || "") : ""}</textarea>
+
+    <div id="formError" style="color:var(--danger); font-size:13px; margin-top:10px; display:none;"></div>
+
+    <button type="submit" style="width:100%; background:var(--accent); color:var(--accent-fg); border:none; border-radius:12px; padding:13px; font-size:15px; font-weight:600; margin: 18px 0 8px; cursor:pointer;">
+      ${existing ? "Guardar cambios" : "Guardar"}
+    </button>
+    ${existing ? `<button type="button" id="deleteBtn" style="width:100%; background:none; color:var(--danger); border:none; padding:8px; font-size:14px; font-weight:600; margin-bottom:8px; cursor:pointer;">Eliminar registro</button>` : ""}
+    <button type="button" data-nav="${existing ? 'historial' : 'inicio'}" style="width:100%; background:none; color:var(--text-secondary); border:none; padding:8px; font-size:14px; margin-bottom:20px; cursor:pointer;">Cancelar</button>
+  </form>
+  `;
+}
+
+// ---------- HISTORIAL ----------
+function renderHistorial() {
+  const filtro = state.historialFiltro;
+  const list = filtro === "todos" ? state.entries : state.entries.filter(e => e.tipo === filtro);
+  const chips = [{ id: "todos", label: "Todos" }].concat(Object.keys(CATS).map(k => ({ id: k, label: CATS[k].label })));
+  return `
+    <div style="display:flex; gap:6px; overflow-x:auto; padding-bottom:4px; margin-bottom:14px;">
+      ${chips.map(ch => `<button data-filtro="${ch.id}" style="flex-shrink:0; padding:7px 13px; border-radius:999px; border:0.5px solid var(--border); background:${filtro === ch.id ? "var(--accent)" : "var(--surface)"}; color:${filtro === ch.id ? "var(--accent-fg)" : "var(--text-secondary)"}; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">${ch.label}</button>`).join("")}
+    </div>
+    ${list.length === 0 ? `<div style="text-align:center; padding:40px 0; color:var(--text-muted); font-size:14px;">Sin registros en esta categoría.</div>` : list.map(entryRow).join("")}
+  `;
+}
+
+// ---------- AJUSTES ----------
+function renderAjustes() {
+  return `
+    <div style="background:var(--surface); border-radius:14px; padding:6px 16px; box-shadow:var(--shadow); margin-bottom:16px;">
+      ${fieldLabel("Cotización actual del dólar (pesos uruguayos por dólar)")}
+      <input id="s_cotizacion" type="number" inputmode="decimal" step="0.01" value="${state.settings.cotizacion}" style="${inputStyle()}">
+      <div style="font-size:12px; color:var(--text-muted); margin:6px 0 4px;">Se usa como valor sugerido en cada carga en pesos. Cada registro guarda la cotización que se usó ese día.</div>
+
+      ${fieldLabel("Odómetro inicial (al comprar la camioneta)")}
+      <input id="s_odoinicial" type="number" inputmode="numeric" value="${state.settings.odometroInicial}" style="${inputStyle()}">
+      <div style="font-size:12px; color:var(--text-muted); margin:6px 0 12px;">Se usa para calcular km recorridos y costo por km.</div>
+
+      <button id="saveSettingsBtn" style="width:100%; background:var(--accent); color:var(--accent-fg); border:none; border-radius:10px; padding:12px; font-size:14.5px; font-weight:600; margin-bottom:14px; cursor:pointer;">Guardar</button>
+    </div>
+
+    <div style="background:var(--surface); border-radius:14px; padding:16px; box-shadow:var(--shadow); margin-bottom:16px;">
+      <div style="font-size:13.5px; font-weight:600; margin-bottom:4px;">Copia de seguridad</div>
+      <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">Los datos se guardan solo en este navegador. Hacé una copia de tanto en tanto o si vas a cambiar de celular/computadora.</div>
+      <button id="exportBtn" style="width:100%; background:var(--surface-2); color:var(--text-primary); border:0.5px solid var(--border); border-radius:10px; padding:11px; font-size:14px; font-weight:600; margin-bottom:8px; cursor:pointer;">Exportar datos (.json)</button>
+      <button id="importBtn" style="width:100%; background:var(--surface-2); color:var(--text-primary); border:0.5px solid var(--border); border-radius:10px; padding:11px; font-size:14px; font-weight:600; cursor:pointer;">Importar datos (.json)</button>
+      <input type="file" id="importFile" accept="application/json" style="display:none;">
+    </div>
+
+    <div style="font-size:12.5px; color:var(--text-muted); text-align:center; padding-bottom:20px;">Toyota Hilux 2011 · registro de gastos en dólares</div>
+  `;
+}
+
+// ---------- eventos ----------
+function wireEvents() {
+  document.querySelectorAll("[data-nav]").forEach(el => {
+    el.addEventListener("click", () => {
+      state.tab = el.getAttribute("data-nav");
+      state.addTipo = null;
+      state.editId = null;
+      state.editTipo = null;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-pick]").forEach(el => {
+    el.addEventListener("click", () => {
+      state.addTipo = el.getAttribute("data-pick");
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-filtro]").forEach(el => {
+    el.addEventListener("click", () => {
+      state.historialFiltro = el.getAttribute("data-filtro");
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-edit]").forEach(el => {
+    el.addEventListener("click", () => {
+      state.editId = el.getAttribute("data-edit");
+      state.editTipo = el.getAttribute("data-tipo");
+      state.tab = "cargar";
+      render();
+    });
+  });
+
+  const monedaBtns = document.querySelectorAll(".monedaBtn");
+  monedaBtns.forEach(el => {
+    el.addEventListener("click", () => {
+      const val = el.getAttribute("data-moneda");
+      document.getElementById("f_moneda").value = val;
+      monedaBtns.forEach(b => {
+        const active = b.getAttribute("data-moneda") === val;
+        b.style.background = active ? "var(--accent-tint)" : "var(--surface)";
+        b.style.color = active ? "var(--accent-tint-text)" : "var(--text-primary)";
+      });
+      const cw = document.getElementById("cotizWrap");
+      if (cw) cw.style.display = val === "UYU" ? "block" : "none";
+      updatePreview();
+    });
+  });
+
+  const fuenteBtns = document.querySelectorAll(".fuenteBtn");
+  fuenteBtns.forEach(el => {
+    el.addEventListener("click", () => {
+      const val = el.getAttribute("data-fuente");
+      document.getElementById("f_fuente").value = val;
+      fuenteBtns.forEach(b => {
+        const active = b.getAttribute("data-fuente") === val;
+        b.style.background = active ? "var(--accent-tint)" : "var(--surface)";
+        b.style.color = active ? "var(--accent-tint-text)" : "var(--text-primary)";
+      });
+    });
+  });
+
+  ["f_monto", "f_cotizacion"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", updatePreview);
+  });
+  updatePreview();
+
+  const form = document.getElementById("entryForm");
+  if (form) form.addEventListener("submit", onSubmitForm);
+
+  const delBtn = document.getElementById("deleteBtn");
+  if (delBtn) delBtn.addEventListener("click", async () => {
+    if (confirm("¿Eliminar este registro?")) {
+      await deleteEntry(state.editId);
+      state.tab = "historial";
+      state.editId = null;
+      state.editTipo = null;
+      render();
+    }
+  });
+
+  const saveSettingsBtn = document.getElementById("saveSettingsBtn");
+  if (saveSettingsBtn) saveSettingsBtn.addEventListener("click", async () => {
+    const cot = parseFloat(document.getElementById("s_cotizacion").value);
+    const odo = parseFloat(document.getElementById("s_odoinicial").value);
+    await saveSettingsField({
+      cotizacion: isNaN(cot) ? state.settings.cotizacion : cot,
+      odometroInicial: isNaN(odo) ? state.settings.odometroInicial : odo,
+    });
+    showToast("Configuración guardada", "ok");
+  });
+
+  const exportBtn = document.getElementById("exportBtn");
+  if (exportBtn) exportBtn.addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify({ entries: state.entries, settings: state.settings }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "gastos_hilux_backup_" + todayISO() + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  const importBtn = document.getElementById("importBtn");
+  const importFile = document.getElementById("importFile");
+  if (importBtn && importFile) {
+    importBtn.addEventListener("click", () => importFile.click());
+    importFile.addEventListener("change", (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = JSON.parse(reader.result);
+          if (!Array.isArray(parsed.entries)) throw new Error("formato inválido");
+          if (!confirm("Esto reemplaza los datos actuales de este navegador por los del archivo. ¿Continuar?")) return;
+          state.entries = parsed.entries;
+          state.settings = Object.assign({ cotizacion: 40, odometroInicial: 340000 }, parsed.settings || {});
+          persistToStorage();
+          showToast("Datos importados", "ok");
+          render();
+        } catch (e) {
+          showToast("El archivo no es válido", "error");
+        }
+      };
+      reader.readAsText(file);
+      importFile.value = "";
+    });
+  }
+}
+
+function updatePreview() {
+  const prev = document.getElementById("previewUSD");
+  if (!prev) return;
+  const moneda = document.getElementById("f_moneda").value;
+  const monto = parseFloat(document.getElementById("f_monto").value);
+  if (isNaN(monto)) { prev.textContent = ""; return; }
+  if (moneda === "USD") { prev.textContent = ""; return; }
+  const cotEl = document.getElementById("f_cotizacion");
+  const cot = cotEl ? parseFloat(cotEl.value) : NaN;
+  if (isNaN(cot) || cot <= 0) { prev.textContent = ""; return; }
+  prev.textContent = "≈ " + fmtUSD(monto / cot);
+}
+
+function onSubmitForm(ev) {
+  ev.preventDefault();
+  const errEl = document.getElementById("formError");
+  errEl.style.display = "none";
+
+  const tipo = document.getElementById("f_tipo").value;
+  const fecha = document.getElementById("f_fecha").value;
+  const odometroRaw = document.getElementById("f_odometro").value;
+  const moneda = document.getElementById("f_moneda").value;
+  const montoRaw = document.getElementById("f_monto").value;
+  const cotizacionEl = document.getElementById("f_cotizacion");
+  const notas = document.getElementById("f_notas").value.trim();
+
+  if (!fecha) { errEl.textContent = "Falta la fecha."; errEl.style.display = "block"; return; }
+
+  const odometro = odometroRaw === "" ? null : Number(odometroRaw);
+  if (odometro !== null && (isNaN(odometro) || odometro < 0)) {
+    errEl.textContent = "El odómetro no es válido."; errEl.style.display = "block"; return;
+  }
+
+  const monto = montoRaw === "" ? null : Number(montoRaw);
+  if (monto !== null && isNaN(monto)) {
+    errEl.textContent = "El monto no es válido."; errEl.style.display = "block"; return;
+  }
+
+  let cotizacion = null;
+  if (moneda === "UYU") {
+    cotizacion = cotizacionEl ? Number(cotizacionEl.value) : NaN;
+    if (monto !== null && (isNaN(cotizacion) || cotizacion <= 0)) {
+      errEl.textContent = "Ingresá una cotización válida para convertir a dólares.";
+      errEl.style.display = "block"; return;
+    }
+  }
+
+  const montoUSD = monto !== null ? toUSD(moneda, monto, cotizacion) : 0;
+
+  const data = { fecha, odometro, moneda, monto, cotizacion: moneda === "UYU" ? cotizacion : null, montoUSD, notas };
+
+  if (tipo === "combustible") {
+    const litrosRaw = document.getElementById("f_litros").value;
+    data.litros = litrosRaw === "" ? null : Number(litrosRaw);
+    data.fuente = document.getElementById("f_fuente").value;
+    data.parcial = document.getElementById("f_parcial").checked;
+  } else {
+    data.descripcion = document.getElementById("f_descripcion").value.trim();
+    data.proveedor = document.getElementById("f_proveedor") ? document.getElementById("f_proveedor").value.trim() : "";
+    if (tipo === "cubierta") {
+      data.incluyeAlineacion = document.getElementById("f_alineacion").checked;
+    }
+  }
+
+  saveEntry(tipo, data, state.editId);
+}
+
+// ---------- arranque ----------
+render();
+initDb();
+</script>
+</body>
+</html>
