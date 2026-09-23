@@ -109,15 +109,25 @@ const CATS = {
   service:     { label: "Service y repuestos", icon: "wrench", defaultCurrency: "UYU" },
   aditivo:     { label: "Aditivos", icon: "drop", defaultCurrency: "UYU" },
   cubierta:    { label: "Cubiertas", icon: "tire", defaultCurrency: "USD" },
-  fijo:        { label: "Costos fijos", icon: "shield", defaultCurrency: "UYU" },
 };
-const CATS_CON_ODOMETRO = ["combustible", "service", "aditivo", "cubierta"]; // "fijo" no depende del odómetro
+const CATS_CON_ODOMETRO = ["combustible", "service", "aditivo", "cubierta"];
+
+const DEFAULT_SETTINGS = {
+  cotizacion: 40,
+  odometroInicial: 340000,
+  kmAnualEstimado: 30000,
+  costosFijos: [
+    { id: "cf_patente_2026", concepto: "Patente", fechaInicio: "2026-01-01", fechaFin: "2026-12-31", moneda: "UYU", monto: 53190 },
+    { id: "cf_seguro_2026", concepto: "Seguro", fechaInicio: "2026-08-01", fechaFin: "2027-09-30", moneda: "UYU", monto: 32470 },
+  ],
+  depreciacion: { valorInicial: null, fechaInicio: "2026-08-01", valorFinal: null, fechaFin: "2031-08-01", moneda: "USD" },
+};
 
 const state = {
   tab: "inicio",          // inicio | cargar | historial | ajustes
   dbStatus: "loading",    // loading | ready | unavailable
   entries: [],
-  settings: { cotizacion: 40, odometroInicial: 340000 },
+  settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
   addTipo: null,          // categoría elegida en "cargar"
   editId: null,           // id de entry en edición (null = alta)
   editTipo: null,
@@ -137,6 +147,7 @@ const fmtMoney = (n, cur) => {
   return sym + " " + v.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 const fmtUSD = (n) => fmtMoney(n, "USD");
+const fmtUSDPerKm = (n) => (n === null || n === undefined || isNaN(n)) ? "—" : "US$ " + Number(n).toLocaleString("es-UY", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
 const fmtKm = (n) => (n === null || n === undefined || isNaN(n)) ? "—" : Number(n).toLocaleString("es-UY") + " km";
 const fmtDate = (iso) => iso ? dayjs(iso).format("DD/MM/YYYY") : "—";
 const todayISO = () => dayjs().format("YYYY-MM-DD");
@@ -167,6 +178,74 @@ function lastPrecioLitro(moneda, excludeId) {
   return fuel.length ? fuel[0].precioLitro : null;
 }
 
+function toUSDlive(moneda, monto) {
+  if (monto === null || monto === undefined || monto === "" || isNaN(monto)) return 0;
+  const m = Number(monto);
+  if (moneda === "USD") return m;
+  const c = Number(state.settings.cotizacion) || 0;
+  return c > 0 ? m / c : 0;
+}
+
+function kmAnual() {
+  const v = Number(state.settings.kmAnualEstimado);
+  return v > 0 ? v : 30000;
+}
+
+function kmAnualSegunHistorial() {
+  const conOdo = state.entries
+    .filter(e => typeof e.odometro === "number" && e.fecha)
+    .sort((a, b) => a.fecha.localeCompare(b.fecha));
+  if (conOdo.length < 2) return null;
+  const primero = conOdo[0], ultimo = conOdo[conOdo.length - 1];
+  const dias = (new Date(ultimo.fecha) - new Date(primero.fecha)) / 86400000;
+  const kmDiff = ultimo.odometro - primero.odometro;
+  if (dias < 30 || kmDiff <= 0) return null; // muy poco historial todavía para confiar en el número
+  return kmDiff / (dias / 365);
+}
+
+function estadoVigencia(item, hoy) {
+  if (!item.fechaInicio || !item.fechaFin) return "vigente";
+  if (item.fechaFin < hoy) return "vencido";
+  if (item.fechaInicio > hoy) return "futuro";
+  return "vigente";
+}
+
+function anualizarCostoFijo(it) {
+  const montoUSD = toUSDlive(it.moneda, it.monto);
+  let anios = 1;
+  if (it.fechaInicio && it.fechaFin) {
+    const dias = (new Date(it.fechaFin) - new Date(it.fechaInicio)) / 86400000;
+    if (dias > 0) anios = dias / 365;
+  }
+  return montoUSD / anios;
+}
+
+function costosFijosAnualesUSD() {
+  const hoy = todayISO();
+  const items = (state.settings.costosFijos || []).filter(it => estadoVigencia(it, hoy) === "vigente");
+  return items.reduce((sum, it) => sum + anualizarCostoFijo(it), 0);
+}
+
+function costosFijosPorKm() {
+  return costosFijosAnualesUSD() / kmAnual();
+}
+
+function depreciacionAnualUSD() {
+  const d = state.settings.depreciacion;
+  if (!d || d.valorInicial == null || d.valorInicial === "" || d.valorFinal == null || d.valorFinal === "" || !d.fechaInicio || !d.fechaFin) return null;
+  const dias = (new Date(d.fechaFin) - new Date(d.fechaInicio)) / 86400000;
+  const anios = dias / 365;
+  if (!(anios > 0)) return null;
+  const vi = toUSDlive(d.moneda, d.valorInicial);
+  const vf = toUSDlive(d.moneda, d.valorFinal);
+  return (vi - vf) / anios;
+}
+
+function depreciacionPorKm() {
+  const anual = depreciacionAnualUSD();
+  return anual === null ? null : anual / kmAnual();
+}
+
 function showToast(msg, kind) {
   state.toast = { msg, kind: kind || "ok" };
   render();
@@ -192,6 +271,7 @@ const ICONS = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   tank: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
   shield: '<path d="M12 2 4 5v6c0 5 3.4 8.9 8 11 4.6-2.1 8-6 8-11V5l-8-3z"/>',
+  trend: '<path d="M3 7l7 7 4-4 7 7"/><path d="M15 7h6v6"/>',
 };
 function icon(name, size, color) {
   size = size || 20;
@@ -201,32 +281,24 @@ function icon(name, size, color) {
 // ---------- persistencia (localStorage del navegador) ----------
 const STORAGE_KEY = "gastos_hilux_data_v1";
 
-// Costos fijos anuales precargados de fábrica (se cargan solos la primera vez
-// que se abre la app en un navegador nuevo, después se editan/borran como cualquier registro).
-const SEED_ENTRIES = [
-  { id: "fijo-patente-2026", tipo: "fijo", fecha: "2026-01-01", odometro: null,
-    descripcion: "Patente", periodo: 2026, moneda: "UYU", monto: 53190, cotizacion: 40,
-    montoUSD: 53190 / 40, notas: "6 cuotas de $8.865", createdAt: 0 },
-  { id: "fijo-seguro-2026", tipo: "fijo", fecha: "2026-01-01", odometro: null,
-    descripcion: "Seguro", periodo: 2026, moneda: "UYU", monto: 32470, cotizacion: 40,
-    montoUSD: 32470 / 40, notas: "", createdAt: 0 },
-];
-
 function loadFromStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      const seeded = { entries: SEED_ENTRIES.slice(), settings: { cotizacion: 40, odometroInicial: 340000 } };
+      const seeded = { entries: [], settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
       return seeded;
     }
     const parsed = JSON.parse(raw);
-    return {
-      entries: Array.isArray(parsed.entries) ? parsed.entries : [],
-      settings: Object.assign({ cotizacion: 40, odometroInicial: 340000 }, parsed.settings || {}),
-    };
+    const entries = (Array.isArray(parsed.entries) ? parsed.entries : []).filter(e => e.tipo !== "fijo"); // migración: "fijo" ahora vive en Ajustes
+    const settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
+    if (!Array.isArray(settings.costosFijos) || settings.costosFijos.length === 0) {
+      settings.costosFijos = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.costosFijos));
+    }
+    if (!settings.depreciacion) settings.depreciacion = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.depreciacion));
+    return { entries, settings };
   } catch (e) {
-    return { entries: SEED_ENTRIES.slice(), settings: { cotizacion: 40, odometroInicial: 340000 } };
+    return { entries: [], settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
   }
 }
 
@@ -243,6 +315,7 @@ function initDb() {
   const data = loadFromStorage();
   state.entries = data.entries.slice().sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
   state.settings = data.settings;
+  persistToStorage(); // guarda ya migrado/seedeado
   state.dbStatus = "ready";
   render();
 }
@@ -356,7 +429,7 @@ function renderTab() {
 
 // ---------- INICIO ----------
 function categoryTotalsUSD() {
-  const totals = { combustible: 0, service: 0, aditivo: 0, cubierta: 0, fijo: 0 };
+  const totals = { combustible: 0, service: 0, aditivo: 0, cubierta: 0 };
   for (const e of state.entries) {
     if (totals[e.tipo] !== undefined) totals[e.tipo] += (e.montoUSD || 0);
   }
@@ -384,9 +457,14 @@ function renderInicio() {
   const odoActual = lastOdometro(null);
   const odoIni = state.settings.odometroInicial || 0;
   const kmRec = Math.max(0, odoActual - odoIni);
-  const costoKm = kmRec > 0 ? totalGeneral / kmRec : null;
   const consumo = consumoPromedio();
   const recientes = state.entries.slice(0, 5);
+
+  const cfKm = costosFijosPorKm();
+  const depAnualVal = depreciacionAnualUSD();
+  const depKmVal = depreciacionPorKm();
+  const variablePorKm = kmRec > 0 ? totalGeneral / kmRec : 0;
+  const costoKmTotal = variablePorKm + cfKm + (depKmVal || 0);
 
   const catRows = Object.keys(CATS).map(k => {
     const c = CATS[k];
@@ -399,11 +477,11 @@ function renderInicio() {
 
   return `
     <div style="background:var(--accent); color:var(--accent-fg); border-radius:16px; padding:18px 20px; margin-bottom:14px;">
-      <div style="font-size:13px; opacity:0.85; font-weight:500;">Gastado en total</div>
+      <div style="font-size:13px; opacity:0.85; font-weight:500;">Gastado en total (combustible, service, aditivos, cubiertas)</div>
       <div style="font-size:32px; font-weight:700; letter-spacing:-0.02em; margin-top:2px;">${fmtUSD(totalGeneral)}</div>
       <div style="display:flex; gap:18px; margin-top:12px; font-size:12.5px; opacity:0.92;">
         <div><div style="font-weight:600;">${fmtKm(kmRec)}</div><div style="opacity:0.85;">recorridos</div></div>
-        <div><div style="font-weight:600;">${costoKm !== null ? fmtUSD(costoKm) + "/km" : "—"}</div><div style="opacity:0.85;">costo por km</div></div>
+        <div><div style="font-weight:600;">${fmtUSDPerKm(costoKmTotal)}/km</div><div style="opacity:0.85;">costo por km total est.</div></div>
         ${consumo !== null ? `<div><div style="font-weight:600;">${consumo.toFixed(2)} km/L</div><div style="opacity:0.85;">consumo</div></div>` : ""}
       </div>
     </div>
@@ -428,6 +506,61 @@ function renderInicio() {
     ${recientes.length === 0
       ? `<div style="text-align:center; padding:30px 0; color:var(--text-muted); font-size:14px;">Todavía no cargaste ningún gasto.</div>`
       : recientes.map(entryRow).join("")}
+
+    <div style="margin-top:22px;">
+      <div style="font-size:14px; font-weight:600; margin-bottom:2px;">Costos fijos y depreciación</div>
+      <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Estimados sobre ${kmAnual().toLocaleString("es-UY")} km/año (ajustable en Ajustes). No dependen de cuánto uses la camioneta.</div>
+      <div style="background:var(--surface); border-radius:14px; padding: 4px 16px; margin-bottom:14px; box-shadow:var(--shadow);">
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:0.5px solid var(--border);">
+          <div style="width:34px;height:34px;border-radius:9px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon("shield",16)}</div>
+          <div style="flex:1; font-size:14px; color:var(--text-primary);">Costos fijos (patente, seguro)</div>
+          <div style="text-align:right;">
+            <div style="font-size:14px; font-weight:600;">${fmtUSD(costosFijosAnualesUSD())}/año</div>
+            <div style="font-size:11.5px; color:var(--text-muted);">${fmtUSDPerKm(cfKm)}/km</div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 0;">
+          <div style="width:34px;height:34px;border-radius:9px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon("trend",16)}</div>
+          <div style="flex:1; font-size:14px; color:var(--text-primary);">Depreciación</div>
+          <div style="text-align:right;">
+            ${depAnualVal !== null
+              ? `<div style="font-size:14px; font-weight:600;">${fmtUSD(depAnualVal)}/año</div><div style="font-size:11.5px; color:var(--text-muted);">${fmtUSDPerKm(depKmVal)}/km</div>`
+              : `<div style="font-size:12.5px; color:var(--text-muted);">Completar en Ajustes</div>`}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:4px;">
+      <div style="font-size:14px; font-weight:600; margin-bottom:8px;">Costo por km por categoría</div>
+      <div style="background:var(--surface); border-radius:14px; padding: 4px 16px; margin-bottom:20px; box-shadow:var(--shadow);">
+        ${kmRec > 0
+          ? Object.keys(CATS).map(k => {
+              const c = CATS[k];
+              const porKm = totals[k] / kmRec;
+              return `<div style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:0.5px solid var(--border);">
+                <div style="width:34px;height:34px;border-radius:9px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon(c.icon,16)}</div>
+                <div style="flex:1; font-size:14px; color:var(--text-primary);">${c.label}</div>
+                <div style="font-size:14px; font-weight:600;">${fmtUSDPerKm(porKm)}/km</div>
+              </div>`;
+            }).join("")
+          : `<div style="text-align:center; padding:16px 0; color:var(--text-muted); font-size:13.5px;">Cargá al menos un odómetro para desglosar el costo variable por km.</div>`}
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:0.5px solid var(--border);">
+          <div style="width:34px;height:34px;border-radius:9px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon("shield",16)}</div>
+          <div style="flex:1; font-size:14px; color:var(--text-primary);">Costos fijos</div>
+          <div style="font-size:14px; font-weight:600;">${fmtUSDPerKm(cfKm)}/km</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 0;">
+          <div style="width:34px;height:34px;border-radius:9px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon("trend",16)}</div>
+          <div style="flex:1; font-size:14px; color:var(--text-primary);">Depreciación</div>
+          <div style="font-size:14px; font-weight:600;">${depKmVal !== null ? fmtUSDPerKm(depKmVal) + "/km" : "—"}</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; padding:12px 0 8px; border-top:1.5px solid var(--border); margin-top:4px;">
+          <div style="flex:1; font-size:14px; font-weight:700;">Total estimado</div>
+          <div style="font-size:15px; font-weight:700; color:var(--accent);">${fmtUSDPerKm(costoKmTotal)}/km</div>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -441,7 +574,8 @@ function entryRow(e) {
     if (e.parcial) bits.push("parcial");
     sub += bits.length ? " · " + bits.join(" · ") : "";
   } else if (e.tipo === "fijo") {
-    sub = (e.descripcion || "Costo fijo") + (e.periodo ? " · " + e.periodo : "");
+    const vig = (e.fechaInicio || e.fechaFin) ? (fmtDate(e.fechaInicio) + " a " + fmtDate(e.fechaFin)) : "";
+    sub = (e.descripcion || "Costo fijo") + (vig ? " · " + vig : "");
   } else if (e.descripcion) {
     sub += " · " + e.descripcion;
   }
@@ -474,7 +608,7 @@ function renderCargar() {
       </div>
     </button>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-      ${["service","aditivo","cubierta","fijo"].map(k => {
+      ${["service","aditivo","cubierta"].map(k => {
         const c = CATS[k];
         return `<button data-pick="${k}" style="text-align:left; display:flex; flex-direction:column; gap:8px; background:var(--surface); border:0.5px solid var(--border); border-radius:14px; padding:16px; cursor:pointer; box-shadow:var(--shadow);">
           <div style="width:36px;height:36px;border-radius:10px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;">${icon(c.icon,18)}</div>
@@ -535,18 +669,6 @@ function renderForm(tipo, editId) {
       <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:13.5px; color:var(--text-secondary);">
         <input type="checkbox" id="f_parcial" ${existing && existing.parcial ? "checked" : ""} style="width:17px;height:17px;"> Carga parcial (no llené el tanque)
       </label>
-    `;
-  } else if (tipo === "fijo") {
-    fieldsHtml = `
-      ${fieldLabel("Concepto")}
-      <div style="display:flex; gap:8px; margin-bottom:8px;">
-        ${["Patente","Seguro"].map(cc => `<button type="button" class="conceptoQuick" data-concepto="${cc}" style="flex:1; padding:9px; border-radius:10px; border:0.5px solid var(--border); background:var(--surface); color:var(--text-primary); font-size:13.5px; font-weight:600; cursor:pointer;">${cc}</button>`).join("")}
-      </div>
-      <input id="f_descripcion" type="text" placeholder="Ej. Patente" value="${existing ? (existing.descripcion || "") : ""}" style="${inputStyle()}">
-
-      ${fieldLabel("Período (año)")}
-      <input id="f_periodo" type="number" inputmode="numeric" placeholder="Ej. ${new Date().getFullYear()}" value="${existing && existing.periodo ? existing.periodo : new Date().getFullYear()}" style="${inputStyle()}">
-      <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">Es un costo fijo anual — no depende de los km que hagas. Se suma igual al total y al costo por km.</div>
     `;
   } else {
     const label2 = tipo === "aditivo" ? "Producto" : (tipo === "cubierta" ? "Descripción" : "Descripción del trabajo");
@@ -625,18 +747,120 @@ function renderHistorial() {
 }
 
 // ---------- AJUSTES ----------
+function costoFijoRowHtml(item) {
+  const anual = anualizarCostoFijo(item);
+  const estado = estadoVigencia(item, todayISO());
+  const badge = estado === "vigente"
+    ? `<span style="background:var(--success-tint); color:var(--success-tint-text); font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:999px;">VIGENTE</span>`
+    : estado === "futuro"
+      ? `<span style="background:var(--accent-tint); color:var(--accent-tint-text); font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:999px;">PRÓXIMO</span>`
+      : `<span style="background:var(--surface-2); color:var(--text-muted); font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:999px;">VENCIDO</span>`;
+  return `<div class="cfRow" data-cf-id="${item.id}" style="border:0.5px solid var(--border); border-radius:10px; padding:12px; margin-bottom:10px; ${estado === "vencido" ? "opacity:0.6;" : ""}">
+    <div style="display:flex; gap:8px; margin-bottom:8px; align-items:center;">
+      <input type="text" class="cf_concepto" placeholder="Concepto (ej. Patente)" value="${item.concepto || ""}" style="${inputStyle()} flex:1;">
+      ${badge}
+      <button type="button" class="cfRemoveBtn" data-cf-id="${item.id}" style="flex-shrink:0; width:38px; background:var(--danger-tint); color:var(--danger-tint-text); border:none; border-radius:8px; cursor:pointer; display:flex; align-items:center; justify-content:center;">${icon("x",16)}</button>
+    </div>
+    <div style="display:flex; gap:8px; margin-bottom:8px;">
+      <div style="flex:1;">
+        <div style="font-size:11px; color:var(--text-muted); margin-bottom:3px;">Vigencia desde</div>
+        <input type="date" class="cf_fechaInicio" value="${item.fechaInicio || ""}" style="${inputStyle()}">
+      </div>
+      <div style="flex:1;">
+        <div style="font-size:11px; color:var(--text-muted); margin-bottom:3px;">Vigencia hasta</div>
+        <input type="date" class="cf_fechaFin" value="${item.fechaFin || ""}" style="${inputStyle()}">
+      </div>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <select class="cf_moneda" style="${inputStyle()} flex:1;">
+        <option value="UYU" ${item.moneda !== "USD" ? "selected" : ""}>Pesos (UYU)</option>
+        <option value="USD" ${item.moneda === "USD" ? "selected" : ""}>Dólares (USD)</option>
+      </select>
+      <input type="number" class="cf_monto" inputmode="decimal" step="0.01" placeholder="Monto del período" value="${item.monto != null && item.monto !== "" ? item.monto : ""}" style="${inputStyle()} flex:1;">
+    </div>
+    <div style="font-size:11.5px; color:var(--text-muted); margin-top:6px;">${item.fechaInicio && item.fechaFin ? "≈ " + fmtUSD(anual) + "/año equivalente" : "Sin fechas, se toma como un año completo"}${estado === "vencido" ? " · ya no se suma al costo por km" : ""}</div>
+  </div>`;
+}
+
+function readCostosFijosFromDOM() {
+  const rows = document.querySelectorAll("#costosFijosList .cfRow");
+  const result = [];
+  rows.forEach(row => {
+    result.push({
+      id: row.getAttribute("data-cf-id"),
+      concepto: row.querySelector(".cf_concepto").value.trim(),
+      fechaInicio: row.querySelector(".cf_fechaInicio").value || null,
+      fechaFin: row.querySelector(".cf_fechaFin").value || null,
+      moneda: row.querySelector(".cf_moneda").value,
+      monto: row.querySelector(".cf_monto").value === "" ? 0 : Number(row.querySelector(".cf_monto").value),
+    });
+  });
+  return result;
+}
+
 function renderAjustes() {
+  const dep = state.settings.depreciacion || DEFAULT_SETTINGS.depreciacion;
+  const depAnual = depreciacionAnualUSD();
+  const depKm = depreciacionPorKm();
   return `
     <div style="background:var(--surface); border-radius:14px; padding:6px 16px; box-shadow:var(--shadow); margin-bottom:16px;">
       ${fieldLabel("Cotización actual del dólar (pesos uruguayos por dólar)")}
       <input id="s_cotizacion" type="number" inputmode="decimal" step="0.01" value="${state.settings.cotizacion}" style="${inputStyle()}">
-      <div style="font-size:12px; color:var(--text-muted); margin:6px 0 4px;">Se usa como valor sugerido en cada carga en pesos. Cada registro guarda la cotización que se usó ese día.</div>
+      <div style="font-size:12px; color:var(--text-muted); margin:6px 0 4px;">Se usa como valor sugerido en cada carga en pesos, y para convertir costos fijos y depreciación a dólares.</div>
 
       ${fieldLabel("Odómetro inicial (al comprar la camioneta)")}
       <input id="s_odoinicial" type="number" inputmode="numeric" value="${state.settings.odometroInicial}" style="${inputStyle()}">
       <div style="font-size:12px; color:var(--text-muted); margin:6px 0 12px;">Se usa para calcular km recorridos y costo por km.</div>
 
+      ${fieldLabel("Km estimados por año")}
+      <input id="s_kmanual" type="number" inputmode="numeric" value="${kmAnual()}" style="${inputStyle()}">
+      <div style="font-size:12px; color:var(--text-muted); margin:6px 0 6px;">Se usa para repartir los costos fijos y la depreciación entre los km del año. Si con el tiempo ves que hacés más o menos km que esto, actualizalo acá.</div>
+      ${(() => { const real = kmAnualSegunHistorial(); return real !== null
+        ? `<div style="display:flex; align-items:center; justify-content:space-between; background:var(--surface-2); border-radius:8px; padding:8px 10px; margin-bottom:12px; font-size:12.5px; color:var(--text-secondary);">
+             <span>Según tu historial de cargas: ~${Math.round(real).toLocaleString("es-UY")} km/año</span>
+             <button type="button" id="usarKmHistorialBtn" style="background:none; border:none; color:var(--accent); font-weight:700; font-size:12.5px; cursor:pointer; padding:2px 4px;">Usar</button>
+           </div>`
+        : `<div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">Todavía no hay suficiente historial de cargas para que la app calcule tu ritmo real (necesita al menos un mes entre la primera y la última carga con odómetro).</div>`;
+      })()}
+
       <button id="saveSettingsBtn" style="width:100%; background:var(--accent); color:var(--accent-fg); border:none; border-radius:10px; padding:12px; font-size:14.5px; font-weight:600; margin-bottom:14px; cursor:pointer;">Guardar</button>
+    </div>
+
+    <div style="background:var(--surface); border-radius:14px; padding:16px; box-shadow:var(--shadow); margin-bottom:16px;">
+      <div style="font-size:13.5px; font-weight:600; margin-bottom:4px;">Costos fijos anuales</div>
+      <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">Patente, seguro, etc. Cuando termine un período y sepas el valor nuevo, agregá una fila nueva en vez de editar la vieja — así queda el historial, y la app usa sola la que esté vigente según la fecha de hoy.</div>
+      <div id="costosFijosList">
+        ${(state.settings.costosFijos || []).map(costoFijoRowHtml).join("") || `<div style="font-size:13px; color:var(--text-muted); padding:8px 0;">Sin costos fijos cargados.</div>`}
+      </div>
+      <button type="button" id="addCostoFijoBtn" style="width:100%; background:var(--surface-2); color:var(--text-primary); border:0.5px dashed var(--border); border-radius:10px; padding:10px; font-size:13.5px; font-weight:600; margin:4px 0 10px; cursor:pointer;">+ Agregar costo fijo</button>
+      <div style="font-size:12.5px; color:var(--text-secondary); margin-bottom:12px;">Total vigente ahora: ${fmtUSD(costosFijosAnualesUSD())}/año · ${fmtUSDPerKm(costosFijosPorKm())}/km</div>
+      <button id="saveSettingsBtn2" style="width:100%; background:var(--accent); color:var(--accent-fg); border:none; border-radius:10px; padding:12px; font-size:14.5px; font-weight:600; cursor:pointer;">Guardar</button>
+    </div>
+
+    <div style="background:var(--surface); border-radius:14px; padding:16px; box-shadow:var(--shadow); margin-bottom:16px;">
+      <div style="font-size:13.5px; font-weight:600; margin-bottom:4px;">Depreciación estimada</div>
+      <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">Valor de la camioneta en dos momentos — se calcula la pérdida de valor anual y se reparte entre los km estimados por año.</div>
+
+      ${fieldLabel("Valor inicial")}
+      <div style="display:flex; gap:8px;">
+        <input id="s_dep_valorInicial" type="number" inputmode="decimal" step="0.01" placeholder="Ej. 25000" value="${dep.valorInicial != null ? dep.valorInicial : ""}" style="${inputStyle()} flex:1;">
+        <select id="s_dep_moneda" style="${inputStyle()} flex:0 0 100px;">
+          <option value="USD" ${dep.moneda !== "UYU" ? "selected" : ""}>USD</option>
+          <option value="UYU" ${dep.moneda === "UYU" ? "selected" : ""}>UYU</option>
+        </select>
+      </div>
+      ${fieldLabel("Fecha de ese valor inicial")}
+      <input id="s_dep_fechaInicio" type="date" value="${dep.fechaInicio || ""}" style="${inputStyle()}">
+
+      ${fieldLabel("Valor estimado a futuro (misma moneda)")}
+      <input id="s_dep_valorFinal" type="number" inputmode="decimal" step="0.01" placeholder="Ej. 12000" value="${dep.valorFinal != null ? dep.valorFinal : ""}" style="${inputStyle()}">
+      ${fieldLabel("Fecha de ese valor futuro")}
+      <input id="s_dep_fechaFin" type="date" value="${dep.fechaFin || ""}" style="${inputStyle()}">
+
+      <div style="font-size:12.5px; color:var(--text-secondary); margin:10px 0 12px;">
+        ${depAnual !== null ? `Depreciación estimada: ${fmtUSD(depAnual)}/año · ${fmtUSDPerKm(depKm)}/km` : "Completá los dos valores y las dos fechas para calcularla."}
+      </div>
+      <button id="saveSettingsBtn3" style="width:100%; background:var(--accent); color:var(--accent-fg); border:none; border-radius:10px; padding:12px; font-size:14.5px; font-weight:600; cursor:pointer;">Guardar</button>
     </div>
 
     <div style="background:var(--surface); border-radius:14px; padding:16px; box-shadow:var(--shadow); margin-bottom:16px;">
@@ -736,14 +960,6 @@ function wireEvents() {
     });
   });
 
-  const conceptoBtns = document.querySelectorAll(".conceptoQuick");
-  conceptoBtns.forEach(el => {
-    el.addEventListener("click", () => {
-      const desc = document.getElementById("f_descripcion");
-      if (desc) desc.value = el.getAttribute("data-concepto");
-    });
-  });
-
   const odoInputEl = document.getElementById("f_odometro");
   if (odoInputEl) odoInputEl.addEventListener("input", updateOdometroHelper);
   updateOdometroHelper();
@@ -777,15 +993,56 @@ function wireEvents() {
     }
   });
 
-  const saveSettingsBtn = document.getElementById("saveSettingsBtn");
-  if (saveSettingsBtn) saveSettingsBtn.addEventListener("click", async () => {
+  const saveAllSettings = async () => {
     const cot = parseFloat(document.getElementById("s_cotizacion").value);
     const odo = parseFloat(document.getElementById("s_odoinicial").value);
+    const kma = parseFloat(document.getElementById("s_kmanual").value);
+    const costosFijos = readCostosFijosFromDOM();
+    const depValorInicial = document.getElementById("s_dep_valorInicial").value;
+    const depValorFinal = document.getElementById("s_dep_valorFinal").value;
     await saveSettingsField({
       cotizacion: isNaN(cot) ? state.settings.cotizacion : cot,
       odometroInicial: isNaN(odo) ? state.settings.odometroInicial : odo,
+      kmAnualEstimado: isNaN(kma) || kma <= 0 ? state.settings.kmAnualEstimado : kma,
+      costosFijos: costosFijos,
+      depreciacion: {
+        valorInicial: depValorInicial === "" ? null : Number(depValorInicial),
+        valorFinal: depValorFinal === "" ? null : Number(depValorFinal),
+        fechaInicio: document.getElementById("s_dep_fechaInicio").value || null,
+        fechaFin: document.getElementById("s_dep_fechaFin").value || null,
+        moneda: document.getElementById("s_dep_moneda").value,
+      },
     });
     showToast("Configuración guardada", "ok");
+    render();
+  };
+
+  ["saveSettingsBtn", "saveSettingsBtn2", "saveSettingsBtn3"].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.addEventListener("click", saveAllSettings);
+  });
+
+  const usarKmHistorialBtn = document.getElementById("usarKmHistorialBtn");
+  if (usarKmHistorialBtn) usarKmHistorialBtn.addEventListener("click", () => {
+    const real = kmAnualSegunHistorial();
+    const input = document.getElementById("s_kmanual");
+    if (real !== null && input) input.value = Math.round(real);
+  });
+
+  const addCostoFijoBtn = document.getElementById("addCostoFijoBtn");
+  if (addCostoFijoBtn) addCostoFijoBtn.addEventListener("click", () => {
+    state.settings.costosFijos = readCostosFijosFromDOM();
+    const anioAct = new Date().getFullYear();
+    state.settings.costosFijos.push({ id: "cf_" + uid(), concepto: "", fechaInicio: anioAct + "-01-01", fechaFin: anioAct + "-12-31", moneda: "UYU", monto: "" });
+    render();
+  });
+
+  document.querySelectorAll(".cfRemoveBtn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-cf-id");
+      state.settings.costosFijos = readCostosFijosFromDOM().filter(it => it.id !== id);
+      render();
+    });
   });
 
   const exportBtn = document.getElementById("exportBtn");
@@ -815,7 +1072,7 @@ function wireEvents() {
           if (!Array.isArray(parsed.entries)) throw new Error("formato inválido");
           if (!confirm("Esto reemplaza los datos actuales de este navegador por los del archivo. ¿Continuar?")) return;
           state.entries = parsed.entries;
-          state.settings = Object.assign({ cotizacion: 40, odometroInicial: 340000 }, parsed.settings || {});
+          state.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), parsed.settings || {});
           persistToStorage();
           showToast("Datos importados", "ok");
           render();
@@ -927,10 +1184,6 @@ function onSubmitForm(ev) {
     data.precioLitro = precioRaw === "" ? null : Number(precioRaw);
     data.fuente = document.getElementById("f_fuente").value;
     data.parcial = document.getElementById("f_parcial").checked;
-  } else if (tipo === "fijo") {
-    data.descripcion = document.getElementById("f_descripcion").value.trim();
-    const periodoRaw = document.getElementById("f_periodo").value;
-    data.periodo = periodoRaw === "" ? null : Number(periodoRaw);
   } else {
     data.descripcion = document.getElementById("f_descripcion").value.trim();
     data.proveedor = document.getElementById("f_proveedor") ? document.getElementById("f_proveedor").value.trim() : "";
