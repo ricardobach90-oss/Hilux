@@ -109,7 +109,9 @@ const CATS = {
   service:     { label: "Service y repuestos", icon: "wrench", defaultCurrency: "UYU" },
   aditivo:     { label: "Aditivos", icon: "drop", defaultCurrency: "UYU" },
   cubierta:    { label: "Cubiertas", icon: "tire", defaultCurrency: "USD" },
+  fijo:        { label: "Costos fijos", icon: "shield", defaultCurrency: "UYU" },
 };
+const CATS_CON_ODOMETRO = ["combustible", "service", "aditivo", "cubierta"]; // "fijo" no depende del odómetro
 
 const state = {
   tab: "inicio",          // inicio | cargar | historial | ajustes
@@ -157,6 +159,14 @@ function lastOdometro(excludeId) {
   return max;
 }
 
+function lastPrecioLitro(moneda, excludeId) {
+  const fuel = state.entries
+    .filter(e => e.tipo === "combustible" && e.id !== excludeId && e.moneda === moneda
+      && typeof e.precioLitro === "number" && e.precioLitro > 0)
+    .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "") || (b.createdAt || 0) - (a.createdAt || 0));
+  return fuel.length ? fuel[0].precioLitro : null;
+}
+
 function showToast(msg, kind) {
   state.toast = { msg, kind: kind || "ok" };
   render();
@@ -181,6 +191,7 @@ const ICONS = {
   alert: '<path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   tank: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
+  shield: '<path d="M12 2 4 5v6c0 5 3.4 8.9 8 11 4.6-2.1 8-6 8-11V5l-8-3z"/>',
 };
 function icon(name, size, color) {
   size = size || 20;
@@ -190,17 +201,32 @@ function icon(name, size, color) {
 // ---------- persistencia (localStorage del navegador) ----------
 const STORAGE_KEY = "gastos_hilux_data_v1";
 
+// Costos fijos anuales precargados de fábrica (se cargan solos la primera vez
+// que se abre la app en un navegador nuevo, después se editan/borran como cualquier registro).
+const SEED_ENTRIES = [
+  { id: "fijo-patente-2026", tipo: "fijo", fecha: "2026-01-01", odometro: null,
+    descripcion: "Patente", periodo: 2026, moneda: "UYU", monto: 53190, cotizacion: 40,
+    montoUSD: 53190 / 40, notas: "6 cuotas de $8.865", createdAt: 0 },
+  { id: "fijo-seguro-2026", tipo: "fijo", fecha: "2026-01-01", odometro: null,
+    descripcion: "Seguro", periodo: 2026, moneda: "UYU", monto: 32470, cotizacion: 40,
+    montoUSD: 32470 / 40, notas: "", createdAt: 0 },
+];
+
 function loadFromStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { entries: [], settings: { cotizacion: 40, odometroInicial: 340000 } };
+    if (!raw) {
+      const seeded = { entries: SEED_ENTRIES.slice(), settings: { cotizacion: 40, odometroInicial: 340000 } };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
+      return seeded;
+    }
     const parsed = JSON.parse(raw);
     return {
       entries: Array.isArray(parsed.entries) ? parsed.entries : [],
       settings: Object.assign({ cotizacion: 40, odometroInicial: 340000 }, parsed.settings || {}),
     };
   } catch (e) {
-    return { entries: [], settings: { cotizacion: 40, odometroInicial: 340000 } };
+    return { entries: SEED_ENTRIES.slice(), settings: { cotizacion: 40, odometroInicial: 340000 } };
   }
 }
 
@@ -330,7 +356,7 @@ function renderTab() {
 
 // ---------- INICIO ----------
 function categoryTotalsUSD() {
-  const totals = { combustible: 0, service: 0, aditivo: 0, cubierta: 0 };
+  const totals = { combustible: 0, service: 0, aditivo: 0, cubierta: 0, fijo: 0 };
   for (const e of state.entries) {
     if (totals[e.tipo] !== undefined) totals[e.tipo] += (e.montoUSD || 0);
   }
@@ -414,6 +440,8 @@ function entryRow(e) {
     if (e.fuente === "cisterna") bits.push("cisterna");
     if (e.parcial) bits.push("parcial");
     sub += bits.length ? " · " + bits.join(" · ") : "";
+  } else if (e.tipo === "fijo") {
+    sub = (e.descripcion || "Costo fijo") + (e.periodo ? " · " + e.periodo : "");
   } else if (e.descripcion) {
     sub += " · " + e.descripcion;
   }
@@ -446,7 +474,7 @@ function renderCargar() {
       </div>
     </button>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-      ${["service","aditivo","cubierta"].map(k => {
+      ${["service","aditivo","cubierta","fijo"].map(k => {
         const c = CATS[k];
         return `<button data-pick="${k}" style="text-align:left; display:flex; flex-direction:column; gap:8px; background:var(--surface); border:0.5px solid var(--border); border-radius:14px; padding:16px; cursor:pointer; box-shadow:var(--shadow);">
           <div style="width:36px;height:36px;border-radius:10px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;">${icon(c.icon,18)}</div>
@@ -468,10 +496,29 @@ function renderForm(tipo, editId) {
   const c = CATS[tipo];
   const existing = editId ? state.entries.find(e => e.id === editId) : null;
   const defCur = existing ? existing.moneda : c.defaultCurrency;
-  const odoSugerido = existing ? existing.odometro : lastOdometro(null);
+  const conOdometro = CATS_CON_ODOMETRO.includes(tipo);
+  const ultimoOdo = lastOdometro(editId);
+
+  let odometroHtml = "";
+  if (conOdometro) {
+    const modoDefault = existing ? "total" : "recorridos";
+    const valorInicial = existing ? existing.odometro : "";
+    odometroHtml = `
+      <div id="odometroBlock">
+        <label style="display:block; font-size:12.5px; font-weight:600; color:var(--text-secondary); margin: 14px 0 6px;"><span id="odometroLabelText">${modoDefault === "recorridos" ? "Km recorridos desde la última carga" : "Odómetro (km)"}</span></label>
+        <div style="display:flex; gap:8px; margin-bottom:8px;">
+          ${[["recorridos","Km recorridos"],["total","Odómetro total"]].map(([m,l]) => `<button type="button" data-odomodo="${m}" class="odomodoBtn" style="flex:1; padding:9px; border-radius:10px; border:0.5px solid var(--border); background:${modoDefault === m ? "var(--accent-tint)" : "var(--surface)"}; color:${modoDefault === m ? "var(--accent-tint-text)" : "var(--text-primary)"}; font-size:13px; font-weight:600; cursor:pointer;">${l}</button>`).join("")}
+        </div>
+        <input id="f_odometro" type="number" inputmode="numeric" placeholder="${modoDefault === "recorridos" ? "Ej. 654" : "Ej. 341250"}" value="${valorInicial}" style="${inputStyle()}">
+        <div id="odometroHelper" style="font-size:12px; color:var(--text-muted); margin-top:6px;">Último odómetro: ${fmtKm(ultimoOdo)}</div>
+        <input type="hidden" id="f_odomodo" value="${modoDefault}">
+      </div>
+    `;
+  }
 
   let fieldsHtml = "";
   if (tipo === "combustible") {
+    const precioSugerido = existing && existing.precioLitro != null ? existing.precioLitro : (lastPrecioLitro(defCur, editId) ?? "");
     fieldsHtml = `
       ${fieldLabel("Fuente")}
       <div style="display:flex; gap:8px;" id="fuenteGroup">
@@ -482,9 +529,24 @@ function renderForm(tipo, editId) {
       ${fieldLabel("Litros (dejá vacío si no tenés el dato, ej. cisterna sin medidor)")}
       <input id="f_litros" type="number" inputmode="decimal" step="0.1" placeholder="Ej. 70" value="${existing && existing.litros != null ? existing.litros : ""}" style="${inputStyle()}">
 
+      ${fieldLabel("Precio por litro (se sugiere el último cargado)")}
+      <input id="f_precioLitro" type="number" inputmode="decimal" step="0.01" placeholder="Ej. 74" value="${precioSugerido}" style="${inputStyle()}">
+
       <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:13.5px; color:var(--text-secondary);">
         <input type="checkbox" id="f_parcial" ${existing && existing.parcial ? "checked" : ""} style="width:17px;height:17px;"> Carga parcial (no llené el tanque)
       </label>
+    `;
+  } else if (tipo === "fijo") {
+    fieldsHtml = `
+      ${fieldLabel("Concepto")}
+      <div style="display:flex; gap:8px; margin-bottom:8px;">
+        ${["Patente","Seguro"].map(cc => `<button type="button" class="conceptoQuick" data-concepto="${cc}" style="flex:1; padding:9px; border-radius:10px; border:0.5px solid var(--border); background:var(--surface); color:var(--text-primary); font-size:13.5px; font-weight:600; cursor:pointer;">${cc}</button>`).join("")}
+      </div>
+      <input id="f_descripcion" type="text" placeholder="Ej. Patente" value="${existing ? (existing.descripcion || "") : ""}" style="${inputStyle()}">
+
+      ${fieldLabel("Período (año)")}
+      <input id="f_periodo" type="number" inputmode="numeric" placeholder="Ej. ${new Date().getFullYear()}" value="${existing && existing.periodo ? existing.periodo : new Date().getFullYear()}" style="${inputStyle()}">
+      <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">Es un costo fijo anual — no depende de los km que hagas. Se suma igual al total y al costo por km.</div>
     `;
   } else {
     const label2 = tipo === "aditivo" ? "Producto" : (tipo === "cubierta" ? "Descripción" : "Descripción del trabajo");
@@ -514,8 +576,7 @@ function renderForm(tipo, editId) {
     ${fieldLabel("Fecha")}
     <input id="f_fecha" type="date" value="${existing ? existing.fecha : todayISO()}" style="${inputStyle()}">
 
-    ${fieldLabel("Odómetro (km)")}
-    <input id="f_odometro" type="number" inputmode="numeric" placeholder="Ej. 341250" value="${odoSugerido || ""}" style="${inputStyle()}">
+    ${odometroHtml}
 
     ${fieldsHtml}
 
@@ -527,6 +588,7 @@ function renderForm(tipo, editId) {
 
     ${fieldLabel("Monto")}
     <input id="f_monto" type="number" inputmode="decimal" step="0.01" placeholder="Ej. 60000" value="${existing && existing.monto != null ? existing.monto : ""}" style="${inputStyle()}">
+    ${tipo === "combustible" ? `<div style="font-size:12px; color:var(--text-muted); margin-top:5px;">Se calcula solo con litros × precio por litro. La podés editar a mano si hace falta.</div>` : ""}
 
     <div id="cotizWrap" style="display:${defCur === "UYU" ? "block" : "none"};">
       ${fieldLabel("Cotización usada (pesos uruguayos por dólar)")}
@@ -653,10 +715,52 @@ function wireEvents() {
     });
   });
 
+  const odomodoBtns = document.querySelectorAll(".odomodoBtn");
+  odomodoBtns.forEach(el => {
+    el.addEventListener("click", () => {
+      const val = el.getAttribute("data-odomodo");
+      document.getElementById("f_odomodo").value = val;
+      odomodoBtns.forEach(b => {
+        const active = b.getAttribute("data-odomodo") === val;
+        b.style.background = active ? "var(--accent-tint)" : "var(--surface)";
+        b.style.color = active ? "var(--accent-tint-text)" : "var(--text-primary)";
+      });
+      const labelEl = document.getElementById("odometroLabelText");
+      const odoInput = document.getElementById("f_odometro");
+      if (labelEl) labelEl.textContent = val === "recorridos" ? "Km recorridos desde la última carga" : "Odómetro (km)";
+      if (odoInput) {
+        odoInput.placeholder = val === "recorridos" ? "Ej. 654" : "Ej. 341250";
+        odoInput.value = "";
+      }
+      updateOdometroHelper();
+    });
+  });
+
+  const conceptoBtns = document.querySelectorAll(".conceptoQuick");
+  conceptoBtns.forEach(el => {
+    el.addEventListener("click", () => {
+      const desc = document.getElementById("f_descripcion");
+      if (desc) desc.value = el.getAttribute("data-concepto");
+    });
+  });
+
+  const odoInputEl = document.getElementById("f_odometro");
+  if (odoInputEl) odoInputEl.addEventListener("input", updateOdometroHelper);
+  updateOdometroHelper();
+
   ["f_monto", "f_cotizacion"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener("input", updatePreview);
   });
+  const montoEl = document.getElementById("f_monto");
+  if (montoEl) montoEl.addEventListener("input", () => { montoEl.dataset.manual = "1"; });
+  if (montoEl && state.editId) montoEl.dataset.manual = "1"; // no recalcular automáticamente sobre un registro existente
+
+  ["f_litros", "f_precioLitro"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", recalcMontoDesdeLitros);
+  });
+  if (!state.editId) recalcMontoDesdeLitros();
   updatePreview();
 
   const form = document.getElementById("entryForm");
@@ -725,6 +829,39 @@ function wireEvents() {
   }
 }
 
+function updateOdometroHelper() {
+  const helper = document.getElementById("odometroHelper");
+  const odoInput = document.getElementById("f_odometro");
+  const modoInput = document.getElementById("f_odomodo");
+  if (!helper || !odoInput || !modoInput) return;
+  const ultimo = lastOdometro(state.editId);
+  const modo = modoInput.value;
+  if (modo === "recorridos") {
+    const val = parseFloat(odoInput.value);
+    if (!isNaN(val) && val >= 0) {
+      helper.textContent = "Último odómetro: " + fmtKm(ultimo) + " → nuevo odómetro: " + fmtKm(ultimo + val);
+    } else {
+      helper.textContent = "Último odómetro: " + fmtKm(ultimo);
+    }
+  } else {
+    helper.textContent = "Último odómetro: " + fmtKm(ultimo);
+  }
+}
+
+function recalcMontoDesdeLitros() {
+  const litrosEl = document.getElementById("f_litros");
+  const precioEl = document.getElementById("f_precioLitro");
+  const montoEl = document.getElementById("f_monto");
+  if (!litrosEl || !precioEl || !montoEl) return;
+  if (montoEl.dataset.manual === "1") return;
+  const litros = parseFloat(litrosEl.value);
+  const precio = parseFloat(precioEl.value);
+  if (!isNaN(litros) && !isNaN(precio) && litros > 0 && precio > 0) {
+    montoEl.value = Math.round(litros * precio * 100) / 100;
+    updatePreview();
+  }
+}
+
 function updatePreview() {
   const prev = document.getElementById("previewUSD");
   if (!prev) return;
@@ -745,7 +882,6 @@ function onSubmitForm(ev) {
 
   const tipo = document.getElementById("f_tipo").value;
   const fecha = document.getElementById("f_fecha").value;
-  const odometroRaw = document.getElementById("f_odometro").value;
   const moneda = document.getElementById("f_moneda").value;
   const montoRaw = document.getElementById("f_monto").value;
   const cotizacionEl = document.getElementById("f_cotizacion");
@@ -753,9 +889,17 @@ function onSubmitForm(ev) {
 
   if (!fecha) { errEl.textContent = "Falta la fecha."; errEl.style.display = "block"; return; }
 
-  const odometro = odometroRaw === "" ? null : Number(odometroRaw);
-  if (odometro !== null && (isNaN(odometro) || odometro < 0)) {
-    errEl.textContent = "El odómetro no es válido."; errEl.style.display = "block"; return;
+  let odometro = null;
+  if (CATS_CON_ODOMETRO.includes(tipo)) {
+    const odometroRaw = document.getElementById("f_odometro").value;
+    const modo = document.getElementById("f_odomodo").value;
+    if (odometroRaw !== "") {
+      const val = Number(odometroRaw);
+      if (isNaN(val) || val < 0) {
+        errEl.textContent = "El odómetro/km no es válido."; errEl.style.display = "block"; return;
+      }
+      odometro = modo === "recorridos" ? lastOdometro(state.editId) + val : val;
+    }
   }
 
   const monto = montoRaw === "" ? null : Number(montoRaw);
@@ -778,9 +922,15 @@ function onSubmitForm(ev) {
 
   if (tipo === "combustible") {
     const litrosRaw = document.getElementById("f_litros").value;
+    const precioRaw = document.getElementById("f_precioLitro").value;
     data.litros = litrosRaw === "" ? null : Number(litrosRaw);
+    data.precioLitro = precioRaw === "" ? null : Number(precioRaw);
     data.fuente = document.getElementById("f_fuente").value;
     data.parcial = document.getElementById("f_parcial").checked;
+  } else if (tipo === "fijo") {
+    data.descripcion = document.getElementById("f_descripcion").value.trim();
+    const periodoRaw = document.getElementById("f_periodo").value;
+    data.periodo = periodoRaw === "" ? null : Number(periodoRaw);
   } else {
     data.descripcion = document.getElementById("f_descripcion").value.trim();
     data.proveedor = document.getElementById("f_proveedor") ? document.getElementById("f_proveedor").value.trim() : "";
