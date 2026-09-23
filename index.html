@@ -476,13 +476,23 @@ function renderInicio() {
   }).join("");
 
   return `
-    <div style="background:var(--accent); color:var(--accent-fg); border-radius:16px; padding:18px 20px; margin-bottom:14px;">
-      <div style="font-size:13px; opacity:0.85; font-weight:500;">Gastado en total (combustible, service, aditivos, cubiertas)</div>
-      <div style="font-size:32px; font-weight:700; letter-spacing:-0.02em; margin-top:2px;">${fmtUSD(totalGeneral)}</div>
-      <div style="display:flex; gap:18px; margin-top:12px; font-size:12.5px; opacity:0.92;">
-        <div><div style="font-weight:600;">${fmtKm(kmRec)}</div><div style="opacity:0.85;">recorridos</div></div>
-        <div><div style="font-weight:600;">${fmtUSDPerKm(costoKmTotal)}/km</div><div style="opacity:0.85;">costo por km total est.</div></div>
-        ${consumo !== null ? `<div><div style="font-weight:600;">${consumo.toFixed(2)} km/L</div><div style="opacity:0.85;">consumo</div></div>` : ""}
+    <div style="background:var(--accent); color:var(--accent-fg); border-radius:16px; padding:20px; margin-bottom:14px;">
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center;">
+        <div>
+          <div style="font-size:19px; font-weight:700; letter-spacing:-0.01em;">${fmtKm(kmRec)}</div>
+          <div style="font-size:11px; opacity:0.85; margin-top:2px;">km recorridos</div>
+        </div>
+        <div>
+          <div style="font-size:19px; font-weight:700; letter-spacing:-0.01em;">${fmtUSDPerKm(costoKmTotal)}</div>
+          <div style="font-size:11px; opacity:0.85; margin-top:2px;">costo por km</div>
+        </div>
+        <div>
+          <div style="font-size:19px; font-weight:700; letter-spacing:-0.01em;">${consumo !== null ? consumo.toFixed(2) : "—"}</div>
+          <div style="font-size:11px; opacity:0.85; margin-top:2px;">km/L rendimiento</div>
+        </div>
+      </div>
+      <div style="text-align:center; margin-top:14px; padding-top:12px; border-top:0.5px solid rgba(255,255,255,0.25); font-size:12px; opacity:0.8;">
+        Gastado en total: ${fmtUSD(totalGeneral)}
       </div>
     </div>
 
