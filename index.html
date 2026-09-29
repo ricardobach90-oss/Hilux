@@ -751,6 +751,10 @@ function renderForm(tipo, editId) {
     const label2 = tipo === "aditivo" ? "Producto" : (tipo === "cubierta" ? "Descripción" : "Descripción del trabajo");
     fieldsHtml = `
       ${fieldLabel(label2)}
+      ${tipo === "aditivo" ? `
+      <div style="display:flex; gap:8px; margin-bottom:8px;">
+        ${["Cera Tec","Diesel Systempflege"].map(p => `<button type="button" class="productoQuick" data-producto="${p}" style="flex:1; padding:9px; border-radius:10px; border:0.5px solid var(--border); background:var(--surface); color:var(--text-primary); font-size:13px; font-weight:600; cursor:pointer;">${p}</button>`).join("")}
+      </div>` : ""}
       <input id="f_descripcion" type="text" placeholder="${tipo === "aditivo" ? "Ej. Liqui Moly Cera Tec" : tipo === "cubierta" ? "Ej. Juego de cubiertas + alineación" : "Ej. Cambio de aceite y filtros"}" value="${existing ? (existing.descripcion || "") : ""}" style="${inputStyle()}">
 
       ${tipo === "cubierta" ? `
@@ -1022,6 +1026,13 @@ function wireEvents() {
         b.style.background = active ? "var(--accent-tint)" : "var(--surface)";
         b.style.color = active ? "var(--accent-tint-text)" : "var(--text-primary)";
       });
+    });
+  });
+
+  document.querySelectorAll(".productoQuick").forEach(el => {
+    el.addEventListener("click", () => {
+      const desc = document.getElementById("f_descripcion");
+      if (desc) desc.value = el.getAttribute("data-producto");
     });
   });
 
