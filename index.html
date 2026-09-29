@@ -203,6 +203,26 @@ function kmAnualSegunHistorial() {
   return kmDiff / (dias / 365);
 }
 
+const RECORDATORIOS = [
+  { id: "ceratec", label: "Cera Tec (aceite)", icon: "drop", intervalo: 50000,
+    match: e => e.tipo === "aditivo" && /cera\s*-?\s*tec/i.test(e.descripcion || "") },
+  { id: "systempflege", label: "Diesel Systempflege", icon: "drop", intervalo: 2000,
+    match: e => e.tipo === "aditivo" && /systempflege/i.test(e.descripcion || "") },
+  { id: "service", label: "Service", icon: "wrench", intervalo: 10000,
+    match: e => e.tipo === "service" },
+  { id: "alineacion", label: "Alineación y balanceo", icon: "tire", intervalo: 10000,
+    match: e => (e.tipo === "cubierta" && e.incluyeAlineacion) || (e.tipo === "service" && /aline|balance/i.test(e.descripcion || "")) },
+];
+
+function estadoRecordatorio(r) {
+  const matches = state.entries.filter(e => typeof e.odometro === "number" && r.match(e));
+  if (matches.length === 0) return { hayDatos: false };
+  const ultimo = matches.reduce((max, e) => e.odometro > max.odometro ? e : max, matches[0]);
+  const odoActual = lastOdometro(null);
+  const kmDesde = odoActual - ultimo.odometro;
+  return { hayDatos: true, ultimoOdo: ultimo.odometro, kmDesde, faltan: r.intervalo - kmDesde, vencido: kmDesde >= r.intervalo, proximo: kmDesde >= r.intervalo * 0.85 };
+}
+
 function estadoVigencia(item, hoy) {
   if (!item.fechaInicio || !item.fechaFin) return "vigente";
   if (item.fechaFin < hoy) return "vencido";
@@ -272,6 +292,7 @@ const ICONS = {
   tank: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
   shield: '<path d="M12 2 4 5v6c0 5 3.4 8.9 8 11 4.6-2.1 8-6 8-11V5l-8-3z"/>',
   trend: '<path d="M3 7l7 7 4-4 7 7"/><path d="M15 7h6v6"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
 };
 function icon(name, size, color) {
   size = size || 20;
@@ -501,6 +522,8 @@ function renderInicio() {
       <span style="font-size:14px; font-weight:600;">${fmtKm(odoActual)}</span>
     </div>
 
+    ${renderRecordatorios(odoActual)}
+
     <div style="background:var(--surface); border-radius:14px; padding: 4px 16px; margin: 14px 0; box-shadow:var(--shadow);">
       ${catRows}
     </div>
@@ -569,6 +592,50 @@ function renderInicio() {
           <div style="flex:1; font-size:14px; font-weight:700;">Total estimado</div>
           <div style="font-size:15px; font-weight:700; color:var(--accent);">${fmtUSDPerKm(costoKmTotal)}/km</div>
         </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRecordatorios(odoActual) {
+  const items = RECORDATORIOS.map(r => Object.assign({ def: r }, estadoRecordatorio(r)));
+  const orden = { vencidoTrue: 0, proximoTrue: 1, normal: 2, sinDatos: 3 };
+  items.sort((a, b) => {
+    const rank = it => !it.hayDatos ? 3 : it.vencido ? 0 : it.proximo ? 1 : 2;
+    return rank(a) - rank(b);
+  });
+
+  const rows = items.map(it => {
+    const r = it.def;
+    let estadoHtml, badge = "";
+    if (!it.hayDatos) {
+      estadoHtml = `<div style="font-size:12px; color:var(--text-muted);">Sin registros todavía</div>`;
+    } else if (it.vencido) {
+      badge = `<span style="background:var(--accent-tint); color:var(--accent-tint-text); font-size:10px; font-weight:700; padding:2px 7px; border-radius:999px; margin-left:6px;">TOCA</span>`;
+      estadoHtml = `<div style="font-size:12px; color:var(--text-secondary);">Último a los ${fmtKm(it.ultimoOdo)} · ya pasaron ${fmtKm(it.kmDesde)}</div>`;
+    } else if (it.proximo) {
+      badge = `<span style="background:var(--surface-2); color:var(--text-secondary); font-size:10px; font-weight:700; padding:2px 7px; border-radius:999px; margin-left:6px;">PRONTO</span>`;
+      estadoHtml = `<div style="font-size:12px; color:var(--text-secondary);">Faltan ${fmtKm(it.faltan)}</div>`;
+    } else {
+      estadoHtml = `<div style="font-size:12px; color:var(--text-muted);">Faltan ${fmtKm(it.faltan)} · cada ${r.intervalo.toLocaleString("es-UY")} km</div>`;
+    }
+    return `<div style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:0.5px solid var(--border);">
+      <div style="width:32px;height:32px;border-radius:9px;background:var(--surface-2);color:var(--text-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${icon(r.icon,15)}</div>
+      <div style="flex:1;">
+        <div style="font-size:13.5px; font-weight:600; color:var(--text-primary);">${r.label}${badge}</div>
+        ${estadoHtml}
+      </div>
+    </div>`;
+  }).join("");
+
+  return `
+    <div style="margin: 14px 0 0;">
+      <div style="display:flex; align-items:center; gap:6px; margin-bottom:2px;">
+        ${icon("bell",14,"var(--text-secondary)")}
+        <span style="font-size:12px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.03em;">Recordatorios</span>
+      </div>
+      <div style="background:var(--surface); border-radius:14px; padding: 4px 16px; box-shadow:var(--shadow);">
+        ${rows}
       </div>
     </div>
   `;
