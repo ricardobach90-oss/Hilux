@@ -505,7 +505,7 @@ function renderInicio() {
       ${catRows}
     </div>
 
-    <button data-nav="cargar" style="width:100%; background:var(--accent); color:var(--accent-fg); border:none; border-radius:12px; padding:13px; font-size:15px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px; margin-bottom:18px; cursor:pointer;">
+    <button data-quickfuel="1" style="width:100%; background:var(--accent); color:var(--accent-fg); border:none; border-radius:12px; padding:13px; font-size:15px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px; margin-bottom:18px; cursor:pointer;">
       ${icon("plus",18,"var(--accent-fg)")} Cargar combustible
     </button>
 
@@ -902,6 +902,15 @@ function wireEvents() {
       state.addTipo = el.getAttribute("data-pick");
       render();
     });
+  });
+
+  const quickFuelBtn = document.querySelector("[data-quickfuel]");
+  if (quickFuelBtn) quickFuelBtn.addEventListener("click", () => {
+    state.tab = "cargar";
+    state.addTipo = "combustible";
+    state.editId = null;
+    state.editTipo = null;
+    render();
   });
 
   document.querySelectorAll("[data-filtro]").forEach(el => {
