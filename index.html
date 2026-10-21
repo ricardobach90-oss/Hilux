@@ -171,6 +171,7 @@ function parseNum(str, miles) {
 }
 // Para mostrar números dentro de un input con coma decimal.
 const fmtInput = (n) => (n === null || n === undefined || n === "" || isNaN(n)) ? "" : String(n).replace(".", ",");
+const fmtKmL = (n) => (n === null || n === undefined || isNaN(n)) ? "—" : Number(n).toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtKm = (n) => (n === null || n === undefined || isNaN(n)) ? "—" : Number(n).toLocaleString("es-UY") + " km";
 const fmtDate = (iso) => iso ? dayjs(iso).format("DD/MM/YYYY") : "—";
 const todayISO = () => dayjs().format("YYYY-MM-DD");
@@ -480,19 +481,52 @@ function categoryTotalsUSD() {
   return totals;
 }
 
-function consumoPromedio() {
+// Rendimiento tanque lleno a tanque lleno.
+// Un tramo va de una carga completa (con litros conocidos) hasta la siguiente carga completa;
+// los litros del tramo son la suma de todas las cargas después de la primera (parciales incluidas).
+// Si en el medio hay una carga sin litros (ej. cisterna sin medidor) o sin odómetro, el tramo no es
+// confiable y se descarta: la cadena arranca de nuevo en la próxima carga completa con litros.
+const MIN_KM_TRAMO = 100; // para mejor/peor: tramos muy cortos distorsionan (un "completar" de 5 L)
+
+function tramosRendimiento() {
   const fuel = state.entries
-    .filter(e => e.tipo === "combustible" && typeof e.odometro === "number" && typeof e.litros === "number" && e.litros > 0)
-    .sort((a, b) => a.odometro - b.odometro);
-  let totalLitros = 0, totalKm = 0, pares = 0;
-  for (let i = 1; i < fuel.length; i++) {
-    const prev = fuel[i - 1], cur = fuel[i];
-    if (cur.parcial) continue; // solo válido si la carga actual completó el tanque
-    const km = cur.odometro - prev.odometro;
-    if (km > 0) { totalLitros += cur.litros; totalKm += km; pares++; }
+    .filter(e => e.tipo === "combustible")
+    .sort((a, b) => ((a.odometro ?? Infinity) - (b.odometro ?? Infinity)) || ((a.createdAt || 0) - (b.createdAt || 0)));
+  const tramos = [];
+  let anchorOdo = null, litrosAcum = 0;
+  for (const f of fuel) {
+    const odoOk = typeof f.odometro === "number";
+    const litrosOk = typeof f.litros === "number" && f.litros > 0;
+    if (!odoOk || !litrosOk) { anchorOdo = null; litrosAcum = 0; continue; }
+    if (anchorOdo === null) {
+      if (!f.parcial) { anchorOdo = f.odometro; litrosAcum = 0; }
+      continue;
+    }
+    litrosAcum += f.litros;
+    if (f.parcial) continue;
+    const km = f.odometro - anchorOdo;
+    if (km > 0) tramos.push({ km, litros: litrosAcum, kmL: km / litrosAcum, fecha: f.fecha });
+    anchorOdo = f.odometro; litrosAcum = 0;
   }
-  if (pares === 0 || totalLitros === 0) return null;
-  return totalKm / totalLitros;
+  return tramos;
+}
+
+function consumoStats() {
+  const tramos = tramosRendimiento();
+  const totalKm = tramos.reduce((a, t) => a + t.km, 0);
+  const totalLitros = tramos.reduce((a, t) => a + t.litros, 0);
+  const global = totalLitros > 0 ? totalKm / totalLitros : null;
+  const validos = tramos.filter(t => t.km >= MIN_KM_TRAMO);
+  let mejor = null, peor = null;
+  if (validos.length >= 2) {
+    mejor = validos.reduce((m, t) => t.kmL > m.kmL ? t : m, validos[0]);
+    peor = validos.reduce((m, t) => t.kmL < m.kmL ? t : m, validos[0]);
+  }
+  return { global, mejor, peor, n: tramos.length };
+}
+
+function consumoPromedio() {
+  return consumoStats().global;
 }
 
 function renderInicio() {
@@ -501,7 +535,8 @@ function renderInicio() {
   const odoActual = lastOdometro(null);
   const odoIni = state.settings.odometroInicial || 0;
   const kmRec = Math.max(0, odoActual - odoIni);
-  const consumo = consumoPromedio();
+  const consumoSt = consumoStats();
+  const consumo = consumoSt.global;
   const recientes = state.entries.slice(0, 5);
 
   const cfKm = costosFijosPorKm();
@@ -531,11 +566,21 @@ function renderInicio() {
           <div style="font-size:11px; opacity:0.85; margin-top:2px;">costo por km</div>
         </div>
         <div>
-          <div style="font-size:19px; font-weight:700; letter-spacing:-0.01em;">${consumo !== null ? consumo.toFixed(2) : "—"}</div>
+          <div style="font-size:19px; font-weight:700; letter-spacing:-0.01em;">${fmtKmL(consumo)}</div>
           <div style="font-size:11px; opacity:0.85; margin-top:2px;">km/L rendimiento</div>
         </div>
       </div>
-      <div style="text-align:center; margin-top:14px; padding-top:12px; border-top:0.5px solid rgba(255,255,255,0.25); font-size:12px; opacity:0.8;">
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; text-align:center; margin-top:14px; padding-top:12px; border-top:0.5px solid rgba(255,255,255,0.25);">
+        <div>
+          <div style="font-size:15px; font-weight:700;">${consumoSt.mejor ? fmtKmL(consumoSt.mejor.kmL) : "—"}</div>
+          <div style="font-size:11px; opacity:0.85; margin-top:2px;">mejor km/L${consumoSt.mejor ? " · " + fmtDate(consumoSt.mejor.fecha) : ""}</div>
+        </div>
+        <div>
+          <div style="font-size:15px; font-weight:700;">${consumoSt.peor ? fmtKmL(consumoSt.peor.kmL) : "—"}</div>
+          <div style="font-size:11px; opacity:0.85; margin-top:2px;">peor km/L${consumoSt.peor ? " · " + fmtDate(consumoSt.peor.fecha) : ""}</div>
+        </div>
+      </div>
+      <div style="text-align:center; margin-top:12px; padding-top:10px; border-top:0.5px solid rgba(255,255,255,0.25); font-size:12px; opacity:0.8;">
         Gastado en total: ${fmtUSD(totalGeneral)}
       </div>
     </div>
