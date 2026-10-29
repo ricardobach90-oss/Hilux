@@ -1080,6 +1080,13 @@ function wireEvents() {
       });
       const cw = document.getElementById("cotizWrap");
       if (cw) cw.style.display = val === "UYU" ? "block" : "none";
+      const pe = document.getElementById("f_precioLitro");
+      if (pe && !state.editId) {
+        pe.dataset.typed = ""; pe.dataset.auto = "";
+        const lp = lastPrecioLitro(val, null);
+        pe.value = lp != null ? fmtInput(lp) : "";
+      }
+      if (pe) recalcMontoDesdeLitros("moneda");
       updatePreview();
     });
   });
@@ -1134,14 +1141,16 @@ function wireEvents() {
     if (el) el.addEventListener("input", updatePreview);
   });
   const montoEl = document.getElementById("f_monto");
-  if (montoEl) montoEl.addEventListener("input", () => { montoEl.dataset.manual = "1"; });
-  if (montoEl && state.editId) montoEl.dataset.manual = "1"; // no recalcular automáticamente sobre un registro existente
-
+  const esComb = !!document.getElementById("f_litros");
+  if (montoEl && esComb) montoEl.addEventListener("input", () => recalcMontoDesdeLitros("monto"));
   ["f_litros", "f_precioLitro"].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener("input", recalcMontoDesdeLitros);
+    if (!el) return;
+    el.addEventListener("input", () => { if (id === "f_precioLitro") { el.dataset.auto = ""; el.dataset.typed = "1"; } recalcMontoDesdeLitros(id); });
+    el.addEventListener("change", () => recalcMontoDesdeLitros(id));
+    el.addEventListener("blur", () => recalcMontoDesdeLitros(id));
   });
-  if (!state.editId) recalcMontoDesdeLitros();
+  if (esComb && !state.editId) recalcMontoDesdeLitros("init");
   updatePreview();
 
   const form = document.getElementById("entryForm");
@@ -1276,18 +1285,28 @@ function updateOdometroHelper() {
   }
 }
 
-function recalcMontoDesdeLitros() {
+function recalcMontoDesdeLitros(origen) {
   const litrosEl = document.getElementById("f_litros");
   const precioEl = document.getElementById("f_precioLitro");
   const montoEl = document.getElementById("f_monto");
   if (!litrosEl || !precioEl || !montoEl) return;
-  if (montoEl.dataset.manual === "1") return;
   const litros = parseNum(litrosEl.value);
   const precio = parseNum(precioEl.value);
-  if (!isNaN(litros) && !isNaN(precio) && litros > 0 && precio > 0) {
-    montoEl.value = fmtInput(Math.round(litros * precio * 100) / 100);
-    updatePreview();
+  const monto = parseNum(montoEl.value, true);
+  const ok = v => !isNaN(v) && v > 0;
+  if (origen === "monto") {
+    // el usuario tocó el total: completar el dato que falta
+    if (ok(monto) && ok(litros) && !ok(precio)) { precioEl.value = fmtInput(Math.round(monto / litros * 100) / 100); precioEl.dataset.auto = "1"; }
+    else if (ok(monto) && ok(precio) && !ok(litros)) { litrosEl.value = fmtInput(Math.round(monto / precio * 100) / 100); }
+    else if (ok(monto) && ok(litros) && precioEl.dataset.auto === "1") { precioEl.value = fmtInput(Math.round(monto / litros * 100) / 100); }
+  } else if (origen === "submit") {
+    if (!ok(monto) && ok(litros) && ok(precio)) montoEl.value = fmtInput(Math.round(litros * precio * 100) / 100);
+  } else {
+    // litros o precio cambiaron: el total SIEMPRE se recalcula al instante
+    if (ok(litros) && ok(precio)) montoEl.value = fmtInput(Math.round(litros * precio * 100) / 100);
+    else if (origen === "f_litros" && ok(litros) && !ok(precio) && ok(monto)) { precioEl.value = fmtInput(Math.round(monto / litros * 100) / 100); precioEl.dataset.auto = "1"; }
   }
+  updatePreview();
 }
 
 function updatePreview() {
@@ -1311,6 +1330,7 @@ function onSubmitForm(ev) {
   const tipo = document.getElementById("f_tipo").value;
   const fecha = document.getElementById("f_fecha").value;
   const moneda = document.getElementById("f_moneda").value;
+  if (tipo === "combustible") recalcMontoDesdeLitros("submit");
   const montoRaw = document.getElementById("f_monto").value;
   const cotizacionEl = document.getElementById("f_cotizacion");
   const notas = document.getElementById("f_notas").value.trim();
